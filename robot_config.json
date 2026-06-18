@@ -1,0 +1,122 @@
+{
+  "robot_type": "unitree_g1",
+  "total_state_joints": 29,
+  "total_action_joints": 8,
+  "state_joint_order": [
+    "right_arm_joint1",
+    "right_arm_joint2",
+    "right_arm_joint3",
+    "right_arm_joint4",
+    "right_arm_joint5",
+    "right_arm_joint6",
+    "right_arm_joint7",
+    "chassis_joint1",
+    "chassis_joint2",
+    "chassis_joint3",
+    "chassis_joint4",
+    "left_arm_joint1",
+    "left_arm_joint2",
+    "left_arm_joint3",
+    "left_arm_joint4",
+    "left_arm_joint5",
+    "left_arm_joint6",
+    "left_arm_joint7",
+    "head_joint1",
+    "head_joint2",
+    "leg_joint1",
+    "leg_joint2",
+    "leg_joint3",
+    "leg_joint4",
+    "leg_joint5",
+    "right_gripper_joint1",
+    "left_key_joint1",
+    "right_key_joint1",
+    "left_gripper_joint1"
+  ],
+  "action_joint_order": [
+    "left_arm_joint1",
+    "left_arm_joint2",
+    "left_arm_joint3",
+    "left_arm_joint4",
+    "left_arm_joint5",
+    "left_arm_joint6",
+    "left_arm_joint7",
+    "left_gripper_joint1"
+  ],
+  "groups": {
+    "right_arm": {
+      "count": 7,
+      "joint_names": [
+        "right_arm_joint1",
+        "right_arm_joint2",
+        "right_arm_joint3",
+        "right_arm_joint4",
+        "right_arm_joint5",
+        "right_arm_joint6",
+        "right_arm_joint7"
+      ]
+    },
+    "chassis": {
+      "count": 4,
+      "joint_names": [
+        "chassis_joint1",
+        "chassis_joint2",
+        "chassis_joint3",
+        "chassis_joint4"
+      ]
+    },
+    "left_arm": {
+      "count": 7,
+      "joint_names": [
+        "left_arm_joint1",
+        "left_arm_joint2",
+        "left_arm_joint3",
+        "left_arm_joint4",
+        "left_arm_joint5",
+        "left_arm_joint6",
+        "left_arm_joint7"
+      ]
+    },
+    "head": {
+      "count": 2,
+      "joint_names": [
+        "head_joint1",
+        "head_joint2"
+      ]
+    },
+    "leg": {
+      "count": 5,
+      "joint_names": [
+        "leg_joint1",
+        "leg_joint2",
+        "leg_joint3",
+        "leg_joint4",
+        "leg_joint5"
+      ]
+    },
+    "right_gripper": {
+      "count": 1,
+      "joint_names": [
+        "right_gripper_joint1"
+      ]
+    },
+    "left_key": {
+      "count": 1,
+      "joint_names": [
+        "left_key_joint1"
+      ]
+    },
+    "right_key": {
+      "count": 1,
+      "joint_names": [
+        "right_key_joint1"
+      ]
+    },
+    "left_gripper": {
+      "count": 1,
+      "joint_names": [
+        "left_gripper_joint1"
+      ]
+    }
+  }
+}
