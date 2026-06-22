@@ -1,0 +1,12 @@
+# Python dependencies for galbot deploy modules.
+#
+# Install in the LeRobot / xhum-new environment (policy server / replay side):
+#   pip install -r galbot/deploy/requirements_policy.txt
+#
+# Install in the robot control environment (client side; no torch / LeRobot):
+#   pip install -r galbot/deploy/requirements_robot.txt
+
+pyzmq>=25.0
+numpy>=2.0
+opencv-python-headless>=4.9.0
+PyYAML>=6.0

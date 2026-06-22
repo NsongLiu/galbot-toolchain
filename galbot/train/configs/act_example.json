@@ -1,0 +1,25 @@
+{
+  "dataset": {
+    "repo_id": "unitree_g1",
+    "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3",
+    "episodes": null
+  },
+  "policy": {
+    "type": "act",
+    "path": null,
+    "push_to_hub": false
+  },
+  "training": {
+    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/act_run_001",
+    "batch_size": 8,
+    "steps": 20000,
+    "num_workers": 4,
+    "save_freq": 5000,
+    "log_freq": 100,
+    "seed": 1000,
+    "resume": false,
+    "resume_dir": null
+  },
+  "use_imagenet_stats": true,
+  "video_backend": "pyav"
+}

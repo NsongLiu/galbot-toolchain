@@ -2,7 +2,7 @@
 银河通用 G1 机器人开发部署工具链（基于 Lerobot 框架 v5.0.1） 
 
 ## 项目规范
-- 环境说明：使用`conda activate xlerobot && export PATH="/root/miniconda3/envs/xlerobot/bin:$PATH"`的环境来进行开发，不许修改该环境中指向的 lerobot 源代码
+- 环境说明：使用`conda activate xhum-new && export PATH="/media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin:$PATH"`的环境来进行开发，具体可参考该环境内指向的 lerobot 源代码来进行基于 lerobot 框架的开发，但是不许修改该环境中指向的 lerobot 源代码
 - 功能实现：这是一个从零开始的项目，开发时注意简洁高效，以最小的代码量与依赖实现指定功能
 - 分支使用：进行修改前首先切换到`dev-les`分支上进行修改
 

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Run any galbot module without pip-installing the package.
+#
+# Usage (from repo root):
+#   ./scripts/galbot-run galbot.train.train --config galbot/train/configs/act_example.json
+#
+# Extra args are passed to ``python -m``.
+set -euo pipefail
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m "$@"

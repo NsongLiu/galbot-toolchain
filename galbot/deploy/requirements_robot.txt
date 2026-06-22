@@ -1,0 +1,4 @@
+# Minimal dependencies for the robot control side (no torch / LeRobot).
+pyzmq>=25.0
+numpy>=2.0
+PyYAML>=6.0

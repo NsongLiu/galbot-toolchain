@@ -1,0 +1,52 @@
+# Galbot 推理部署配置示例
+# 复制到 galbot/deploy/configs/my_deploy.yaml 后按需修改
+
+# ---------------------------------------------------------------------------
+# 运行模式
+# ---------------------------------------------------------------------------
+# model        : 实时机器人控制：由机器人端程序调用 PolicyClient 连接 policy_server
+# replay       : 从 LeRobot V3 数据集读取一集观测，发送给 policy_server 进行推理
+# replay_debug : 与 replay 相同，仅用于无机器人环境下验证 wire + model 链路
+mode: replay_debug
+
+# ---------------------------------------------------------------------------
+# ZMQ 策略服务地址（必须与 policy_server 的 --bind 一致）
+# ---------------------------------------------------------------------------
+policy_server_url: tcp://127.0.0.1:5555
+
+# PolicyClient ZMQ 收发超时（毫秒）。首帧推理 + 大图可能 >10s；默认 120000。0 = 不超时
+policy_zmq_timeout_ms: 120000
+
+# ---------------------------------------------------------------------------
+# replay / replay_debug 必填：LeRobot V3 数据集路径
+# ---------------------------------------------------------------------------
+dataset_root: /media/jushen/Leslie-liu/galbot_dataset/lerobot_v3
+dataset_repo_id: unitree_g1
+episode_index: 0
+action_rate: 30.0
+replay_max_steps: 0  # 0 = 使用整集
+
+# ---------------------------------------------------------------------------
+# TO DEBUG: 若模型只期望单个相机输入，设置 obs_camera_key 与 checkpoint 的短名一致
+# 例如模型输入为 observation.images.left_arm 时，obs_camera_key: left_arm
+# 不设置则发送数据集中的所有相机
+# obs_camera_key: left_arm
+
+# ---------------------------------------------------------------------------
+# 可选：视频后端（replay 模式读取数据集视频时使用）
+video_backend: pyav
+
+# ---------------------------------------------------------------------------
+# 可选：存图与关节向量落盘（用于校验 client 编码与 server 解码是否一致）
+# ---------------------------------------------------------------------------
+image_save:
+  enabled: false
+  directory: debug_policy_images
+  interval: 1
+  max_frames: 0
+  use_timestamp_subdir: true
+
+joints:
+  enabled: false
+  directory: debug_joints
+  use_timestamp_subdir: true
