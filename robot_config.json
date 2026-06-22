@@ -1,5 +1,5 @@
 {
-  "robot_type": "unitree_g1",
+  "robot_type": "galbot_g1",
   "total_state_joints": 29,
   "total_action_joints": 8,
   "state_joint_order": [

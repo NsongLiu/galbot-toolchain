@@ -2,14 +2,9 @@
 
 基于 [LeRobot](https://github.com/huggingface/lerobot) 的 Galbot-G1 数据转换与模型训练工具链。
 
-## 环境要求
+## 前置要求
 
-使用项目指定的 `xhum-new` conda 环境：
-
-```bash
-conda activate xhum-new
-export PATH="/media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin:$PATH"
-```
+首先需要安装lerobot，具体可参考lerobot官方教程。可通过在clone的lerobot目录下执行`git checkout v0.5.1`锁定lerobot版本为0.5.1
 
 ## 1. 数据转换
 
