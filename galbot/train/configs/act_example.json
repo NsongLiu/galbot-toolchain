@@ -1,6 +1,6 @@
 {
   "dataset": {
-    "repo_id": "unitree_g1",
+    "repo_id": "galbot_g1",
     "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3",
     "episodes": null
   },
