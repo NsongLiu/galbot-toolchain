@@ -366,7 +366,7 @@ def main():
     parser.add_argument(
         "--robot-type",
         type=str,
-        default="unitree_g1",
+        default="galbot_g1",
         help="Robot type written to dataset metadata",
     )
     parser.add_argument(

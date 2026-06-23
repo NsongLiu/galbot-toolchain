@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
     "policy_zmq_timeout_ms": 120_000,
     # TO DEBUG: adjust to the LeRobot V3 dataset root used for replay modes.
     "dataset_root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3",
-    "dataset_repo_id": "unitree_g1",
+    "dataset_repo_id": "galbot_g1",
     "episode_index": 0,
     "action_rate": 30.0,
     "replay_max_steps": 0,

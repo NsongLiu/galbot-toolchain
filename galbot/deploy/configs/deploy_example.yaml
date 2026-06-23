@@ -21,7 +21,7 @@ policy_zmq_timeout_ms: 120000
 # replay / replay_debug 必填：LeRobot V3 数据集路径
 # ---------------------------------------------------------------------------
 dataset_root: /media/jushen/Leslie-liu/galbot_dataset/lerobot_v3
-dataset_repo_id: unitree_g1
+dataset_repo_id: galbot_g1
 episode_index: 0
 action_rate: 30.0
 replay_max_steps: 0  # 0 = 使用整集

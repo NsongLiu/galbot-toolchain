@@ -45,7 +45,7 @@ python convert_mcap_to_lerobot.py \
 | `--vcodec` | 视频编码格式，可选 `h264`/`hevc`/`libsvtav1` | `h264` |
 | `--use-images` | 将相机数据存为 PNG 图片而非视频 | 未启用 |
 | `--task` | 任务描述 | `teleoperate the left arm` |
-| `--robot-type` | 机器人类型 | `unitree_g1` |
+| `--robot-type` | 机器人类型 | `galbot_g1` |
 | `--robot-config` | 机器人关节配置 JSON 输出路径 | `./robot_config.json` |
 
 查看全部参数：
@@ -93,7 +93,7 @@ PYTHONPATH=. /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m galb
 ```json
 {
   "dataset": {
-    "repo_id": "unitree_g1",
+    "repo_id": "galbot_g1",
     "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3",
     "episodes": null
   },
@@ -219,7 +219,7 @@ policy_zmq_timeout_ms: 120000
 
 # replay 模式必填
 dataset_root: /media/jushen/Leslie-liu/galbot_dataset/lerobot_v3
-dataset_repo_id: unitree_g1
+dataset_repo_id: galbot_g1
 episode_index: 0
 action_rate: 30.0
 
