@@ -2,30 +2,32 @@
 
 基于 [LeRobot](https://github.com/huggingface/lerobot) 的 Galbot-G1 数据转换与模型训练工具链。
 
+## 路径约定
+
+下文命令中的占位符请按实际环境替换：
+
+| 占位符 | 含义 |
+|--------|------|
+| `<CONDA_ENV>` | 训练/推理用 conda 环境（Python 3.12 + torch + LeRobot v0.5.1） |
+| `<WORKSPACE>` | 数据集工作目录，用于存放 MCAP 源数据、转换后的数据集与训练输出 |
+
 ## 前置要求
 
-首先需要安装lerobot，具体可参考lerobot官方教程。可通过在clone的lerobot目录下执行`git checkout v0.5.1`锁定lerobot版本为0.5.1
+首先需要安装 LeRobot，具体可参考 LeRobot 官方教程。可通过在 clone 的 LeRobot 目录下执行 `git checkout v0.5.1` 锁定版本为 0.5.1。
 
 ## 1. 数据转换
 
 将 Galbot-G1 机器人采集的 MCAP 数据转换为 LeRobot V3 格式数据集。
 
-### 默认转换
-
-源数据默认路径：`/media/jushen/Leslie-liu/galbot_dataset/tmp`  
-目标数据集默认路径：`/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3`
-
-```bash
-python convert_mcap_to_lerobot.py
-```
-
 ### 指定源/目标路径
 
 ```bash
 python convert_mcap_to_lerobot.py \
-  --mcap-dir /media/jushen/Leslie-liu/galbot_dataset/tmp \
-  --out-dir /media/jushen/Leslie-liu/galbot_dataset/lerobot_v3
+  --mcap-dir <WORKSPACE>/tmp \
+  --out-dir <WORKSPACE>/lerobot_v3
 ```
+
+> 脚本中 `--mcap-dir` / `--out-dir` 的内置默认值仅为作者本机预设，实际使用请显式指定。
 
 ### 转换规则
 
@@ -38,8 +40,8 @@ python convert_mcap_to_lerobot.py \
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--mcap-dir` | MCAP 源数据目录 | `/media/jushen/Leslie-liu/galbot_dataset/tmp` |
-| `--out-dir` | LeRobot V3 目标数据集目录 | `/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3` |
+| `--mcap-dir` | MCAP 源数据目录 | `<WORKSPACE>/tmp`（内置预设，建议显式指定） |
+| `--out-dir` | LeRobot V3 目标数据集目录 | `<WORKSPACE>/lerobot_v3`（同上） |
 | `--repo-id` | 数据集元数据中的 repo ID | `galbot/g1_recordings` |
 | `--fps` | 目标帧率 | `30` |
 | `--vcodec` | 视频编码格式，可选 `h264`/`hevc`/`libsvtav1` | `h264` |
@@ -65,6 +67,8 @@ python convert_mcap_to_lerobot.py --help
 
 通过外置的 `galbot/train` 模块调用 LeRobot 接口进行训练，**不修改 LeRobot 源码**。
 
+> 训练入口在导入 LeRobot 之前会通过 `galbot/train/_compat.py` 应用运行时兼容补丁（Python 3.12 dataclass 兼容、PI0.5 视觉权重键重映射），同样不修改 LeRobot 源码与权重文件。PI0.5 策略训练（全参数 / LoRA、离线加载、已知问题）详见 `pi05_tutorial.md`。
+
 ### 快速开始
 
 使用默认配置（ACT 策略，训练 LeRobot V3 数据集）：
@@ -79,10 +83,11 @@ python convert_mcap_to_lerobot.py --help
 ./scripts/galbot-run galbot.train.train --config galbot/train/configs/act_example.json
 ```
 
-或手动指定 Python 路径：
+或手动指定环境：
 
 ```bash
-PYTHONPATH=. /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m galbot.train.train \
+conda activate <CONDA_ENV>
+PYTHONPATH=. python -m galbot.train.train \
   --config galbot/train/configs/act_example.json
 ```
 
@@ -94,7 +99,7 @@ PYTHONPATH=. /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m galb
 {
   "dataset": {
     "repo_id": "galbot_g1",
-    "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3",
+    "root": "<WORKSPACE>/lerobot_v3",
     "episodes": null
   },
   "policy": {
@@ -103,7 +108,7 @@ PYTHONPATH=. /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m galb
     "push_to_hub": false
   },
   "training": {
-    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/act_run_001",
+    "output_dir": "<WORKSPACE>/outputs/act_run_001",
     "batch_size": 8,
     "steps": 20000,
     "num_workers": 4,
@@ -151,7 +156,7 @@ PYTHONPATH=. /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m galb
 ## 3. 推理部署（server-client 框架）
 
 推理部署采用 **解耦架构**：
-- **`policy_server`** 运行在 `xhum-new`（Python 3.12 + LeRobot + torch）环境，加载训练好的策略并通过 ZeroMQ 提供推理服务。
+- **`policy_server`** 运行在策略环境（Python 3.12 + LeRobot + torch，即 `<CONDA_ENV>`），加载训练好的策略并通过 ZeroMQ 提供推理服务。
 - **机器人控制端** 运行在自己的环境（可能不同 conda / Python 版本），通过 `PolicyClient` 发送观测并接收动作，不依赖 torch / LeRobot。
 - **`replay`** 模式从 LeRobot V3 数据集读取轨迹观测，发送给 `policy_server` 验证 wire + model 链路，无需真实机器人。
 
@@ -159,10 +164,10 @@ PYTHONPATH=. /media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin/python -m galb
 
 ```
 galbot/deploy/
-├── policy_agent.py        # LeRobot 策略封装（xhum-new 环境）
-├── policy_server.py       # ZMQ REP 服务端（xhum-new 环境）
+├── policy_agent.py        # LeRobot 策略封装（策略环境）
+├── policy_server.py       # ZMQ REP 服务端（策略环境）
 ├── policy_client.py       # ZMQ REQ 客户端（机器人控制环境，仅需 numpy + pyzmq）
-├── replay.py              # LeRobot V3 数据集 -> ZMQ 回放（xhum-new 环境）
+├── replay.py              # LeRobot V3 数据集 -> ZMQ 回放（策略环境）
 ├── client_example.py      # 最小客户端示例（连接 GalbotSDK + PolicyClient）
 ├── robot_interface.py     # GalbotSDK 控制接口封装（get_observation / apply_action）
 ├── config_loader.py       # YAML 配置加载
@@ -175,13 +180,13 @@ galbot/deploy/
 
 ### 快速开始
 
-> **依赖提示**：部署模块使用 ZeroMQ 通信。请在 `xhum-new` 环境安装 `galbot/deploy/requirements_policy.txt`；在机器人控制环境安装 `galbot/deploy/requirements_robot.txt`。
+> **依赖提示**：部署模块使用 ZeroMQ 通信。请在策略环境安装 `galbot/deploy/requirements_policy.txt`；在机器人控制环境安装 `galbot/deploy/requirements_robot.txt`。
 
 #### 1) 启动策略服务
 
 ```bash
 ./scripts/deploy_server.sh \
-  --model_path /media/jushen/Leslie-liu/galbot_dataset/outputs/act_run_001/checkpoints/last/pretrained_model \
+  --model_path <WORKSPACE>/outputs/act_run_001/checkpoints/last/pretrained_model \
   --bind tcp://127.0.0.1:5555
 ```
 
@@ -218,7 +223,7 @@ policy_server_url: tcp://127.0.0.1:5555
 policy_zmq_timeout_ms: 120000
 
 # replay 模式必填
-dataset_root: /media/jushen/Leslie-liu/galbot_dataset/lerobot_v3
+dataset_root: <WORKSPACE>/lerobot_v3
 dataset_repo_id: galbot_g1
 episode_index: 0
 action_rate: 30.0

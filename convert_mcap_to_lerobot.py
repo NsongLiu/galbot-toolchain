@@ -27,19 +27,51 @@ STATE_GROUPS = [
     ("left_gripper", 1),
 ]
 
-# Action groups and their joint counts.
-ACTION_GROUPS = [
+# Default action groups and their joint counts (left arm teleoperation).
+# Can be overridden via --action-groups, e.g. "right_arm,7" "right_gripper,1".
+DEFAULT_ACTION_GROUPS = [
     ("left_arm", 7),
     ("left_gripper", 1),
 ]
 
-# Color camera topics and the feature keys they map to.
-CAMERA_TOPICS = {
+# Available color camera topics and the feature keys they map to.
+DEFAULT_CAMERA_TOPICS = {
     "left_arm": "/left_arm_camera/color/image_raw",
     "right_arm": "/right_arm_camera/color/image_raw",
     "front_head_left": "/front_head_camera/left_color/image_raw",
     "front_head_right": "/front_head_camera/right_color/image_raw",
 }
+
+
+def parse_action_groups(arg_list: list[str] | None) -> list[tuple[str, int]]:
+    """Parse --action-groups CLI values like ['right_arm,7', 'right_gripper,1']."""
+    if not arg_list:
+        return DEFAULT_ACTION_GROUPS
+    groups = []
+    for item in arg_list:
+        for part in item.split():
+            name, count = part.rsplit(",", 1)
+            groups.append((name.strip(), int(count.strip())))
+    return groups
+
+
+def select_camera_topics(camera_keys: list[str] | None) -> dict[str, str]:
+    """Return the subset of CAMERA_TOPICS to use for conversion."""
+    if not camera_keys:
+        return dict(DEFAULT_CAMERA_TOPICS)
+    return {k: DEFAULT_CAMERA_TOPICS[k] for k in camera_keys if k in DEFAULT_CAMERA_TOPICS}
+
+
+def choose_master_camera(camera_topics: dict[str, str]) -> str:
+    """Pick a master camera to drive the frame timeline.
+
+    Prefer wrist cameras over head cameras, and right over left.
+    """
+    priority = ["right_arm", "left_arm", "front_head_right", "front_head_left"]
+    for key in priority:
+        if key in camera_topics:
+            return key
+    return next(iter(camera_topics))
 
 
 def build_state_vector(sensor_msg) -> np.ndarray:
@@ -77,7 +109,11 @@ def decode_image(compressed_image_msg) -> np.ndarray:
     return img
 
 
-def build_robot_config(mcap_path: Path, robot_type: str) -> dict:
+def build_robot_config(
+    mcap_path: Path,
+    robot_type: str,
+    action_groups: list[tuple[str, int]],
+) -> dict:
     """Build a robot joint configuration JSON from the first sensor message."""
     for m in read_protobuf_messages(mcap_path, topics=["singorix/wbcs/sensor"]):
         sensor_msg = m.proto_msg
@@ -101,7 +137,7 @@ def build_robot_config(mcap_path: Path, robot_type: str) -> dict:
         state_joint_order.extend(names)
 
     action_joint_order = []
-    for group_name, expected_count in ACTION_GROUPS:
+    for group_name, expected_count in action_groups:
         names = groups[group_name]["joint_names"]
         if len(names) != expected_count:
             raise ValueError(
@@ -119,7 +155,11 @@ def build_robot_config(mcap_path: Path, robot_type: str) -> dict:
     }
 
 
-def read_mcap_file(mcap_path: Path):
+def read_mcap_file(
+    mcap_path: Path,
+    action_groups: list[tuple[str, int]],
+    camera_topics: dict[str, str],
+):
     """Read one MCAP file and return structured data for conversion."""
     # Sensor: full body state.
     sensor_times = []
@@ -129,10 +169,10 @@ def read_mcap_file(mcap_path: Path):
         sensor_states.append(build_state_vector(m.proto_msg))
 
     # Targets: per-group action commands.
-    target_times = {group: [] for group, _ in ACTION_GROUPS}
-    target_values = {group: [] for group, _ in ACTION_GROUPS}
+    target_times = {group: [] for group, _ in action_groups}
+    target_values = {group: [] for group, _ in action_groups}
     for m in read_protobuf_messages(mcap_path, topics=["singorix/wbcs/target"]):
-        for group, _ in ACTION_GROUPS:
+        for group, _ in action_groups:
             if group in m.proto_msg.target_group_trajectory_map:
                 positions = parse_target_positions(m.proto_msg, group)
                 if positions:
@@ -144,7 +184,7 @@ def read_mcap_file(mcap_path: Path):
     # use the unique timestamps as the canonical timeline.
     camera_times = {}
     camera_images = {}
-    for key, topic in CAMERA_TOPICS.items():
+    for key, topic in camera_topics.items():
         frame_by_time = {}
         for m in read_protobuf_messages(mcap_path, topics=[topic]):
             t = m.log_time_ns
@@ -189,10 +229,12 @@ def get_state_at_time(sensor_times, sensor_states, t_ns: int) -> np.ndarray:
     return sensor_states[idx]
 
 
-def get_action_at_time(target_times, target_values, t_ns: int) -> np.ndarray:
+def get_action_at_time(
+    target_times, target_values, t_ns: int, action_groups: list[tuple[str, int]]
+) -> np.ndarray:
     """Build action vector from the latest target per group at or before t_ns."""
     vec = []
-    for group, count in ACTION_GROUPS:
+    for group, count in action_groups:
         idx = latest_index_leq(target_times[group], t_ns)
         if idx is None:
             vec.extend([0.0] * count)
@@ -238,29 +280,32 @@ def convert_mcap_to_lerobot(
     use_videos: bool,
     vcodec: str,
     robot_config_path: Path,
+    action_groups: list[tuple[str, int]],
+    camera_topics: dict[str, str],
 ):
-    mcap_files = sorted([p for p in mcap_dir.glob("*.mcap") if "SYNC" in p.name])
+    mcap_files = sorted([p for p in mcap_dir.rglob("*.mcap") if "SYNC" in p.name])
     if not mcap_files:
         raise FileNotFoundError(f"No SYNC .mcap files found in {mcap_dir}")
 
     print(f"Found {len(mcap_files)} SYNC MCAP file(s) in {mcap_dir}")
 
     # Build and write a robot joint configuration JSON from the first SYNC file.
-    robot_config = build_robot_config(mcap_files[0], robot_type)
+    robot_config = build_robot_config(mcap_files[0], robot_type, action_groups)
     robot_config_path.parent.mkdir(parents=True, exist_ok=True)
     with open(robot_config_path, "w", encoding="utf-8") as f:
         json.dump(robot_config, f, indent=2, ensure_ascii=False)
     print(f"Robot config written to {robot_config_path}")
 
     # Read the first file to infer image shapes before creating the dataset.
-    first_data = read_mcap_file(mcap_files[0])
+    first_data = read_mcap_file(mcap_files[0], action_groups, camera_topics)
     image_shapes = get_image_shapes(first_data["camera_images"])
 
+    action_dim = sum(count for _, count in action_groups)
     features = {
         "action": {
             "dtype": "float32",
-            "shape": (sum(count for _, count in ACTION_GROUPS),),
-            "names": [f"left_arm_joint{i}" for i in range(1, 8)] + ["left_gripper_joint1"],
+            "shape": (action_dim,),
+            "names": robot_config["action_joint_order"],
         },
         "observation.state": {
             "dtype": "float32",
@@ -289,9 +334,9 @@ def convert_mcap_to_lerobot(
 
     for episode_idx, mcap_path in enumerate(mcap_files):
         print(f"\nConverting episode {episode_idx}: {mcap_path.name}")
-        data = read_mcap_file(mcap_path)
+        data = read_mcap_file(mcap_path, action_groups, camera_topics)
 
-        master_key = "left_arm"
+        master_key = choose_master_camera(camera_topics)
         master_times = data["camera_times"][master_key]
         if not master_times:
             raise ValueError(f"No master camera frames in {mcap_path.name}")
@@ -302,7 +347,7 @@ def convert_mcap_to_lerobot(
                 data["sensor_times"], data["sensor_states"], t_ns
             )
             action = get_action_at_time(
-                data["target_times"], data["target_values"], t_ns
+                data["target_times"], data["target_values"], t_ns, action_groups
             )
 
             frame = {
@@ -311,7 +356,7 @@ def convert_mcap_to_lerobot(
                 "action": action,
             }
 
-            for key in CAMERA_TOPICS:
+            for key in camera_topics:
                 frame[f"observation.images.{key}"] = get_camera_image_at_time(
                     data["camera_times"],
                     data["camera_images"],
@@ -387,7 +432,28 @@ def main():
         default=Path(__file__).parent / "robot_config.json",
         help="Path to write the robot joint configuration JSON",
     )
+    parser.add_argument(
+        "--action-groups",
+        nargs="+",
+        default=None,
+        help=(
+            "Action groups to extract from singorix/wbcs/target, formatted as 'name,count'. "
+            "Defaults to left_arm,7 left_gripper,1. Example: --action-groups right_arm,7 right_gripper,1"
+        ),
+    )
+    parser.add_argument(
+        "--cameras",
+        nargs="+",
+        default=None,
+        help=(
+            "Camera feature keys to include. Available: left_arm, right_arm, front_head_left, "
+            "front_head_right. Defaults to all cameras. Example: --cameras right_arm front_head_right"
+        ),
+    )
     args = parser.parse_args()
+
+    action_groups = parse_action_groups(args.action_groups)
+    camera_topics = select_camera_topics(args.cameras)
 
     convert_mcap_to_lerobot(
         mcap_dir=args.mcap_dir,
@@ -399,6 +465,8 @@ def main():
         use_videos=not args.use_images,
         vcodec=args.vcodec,
         robot_config_path=args.robot_config,
+        action_groups=action_groups,
+        camera_topics=camera_topics,
     )
 
 

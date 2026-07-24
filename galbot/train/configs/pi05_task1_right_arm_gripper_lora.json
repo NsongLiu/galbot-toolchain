@@ -1,0 +1,58 @@
+{
+  "dataset": {
+    "repo_id": "task1_right_arm_gripper",
+    "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task1_right_arm_gripper",
+    "episodes": null
+  },
+  "policy": {
+    "type": "pi05",
+    "path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/pi05_base",
+    "push_to_hub": false,
+    "rename_map": {
+      "observation.images.front_head_right": "observation.images.base_0_rgb",
+      "observation.images.right_arm": "observation.images.right_wrist_0_rgb"
+    },
+    "normalization_mapping": {
+      "ACTION": "QUANTILES",
+      "STATE": "QUANTILES",
+      "VISUAL": "IDENTITY"
+    },
+    "gradient_checkpointing": true,
+    "dtype": "bfloat16",
+    "compile_model": false,
+    "freeze_vision_encoder": false,
+    "train_expert_only": false,
+    "chunk_size": 50,
+    "n_action_steps": 50,
+    "max_state_dim": 32,
+    "max_action_dim": 32,
+    "optimizer_lr": 1e-4,
+    "optimizer_betas": [0.9, 0.95],
+    "optimizer_eps": 1e-8,
+    "optimizer_weight_decay": 0.01,
+    "optimizer_grad_clip_norm": 1.0,
+    "scheduler_warmup_steps": 500,
+    "scheduler_decay_steps": 20000,
+    "scheduler_decay_lr": 1e-5
+  },
+  "peft": {
+    "method_type": "LORA",
+    "r": 16,
+    "target_modules": null,
+    "full_training_modules": null,
+    "init_type": null
+  },
+  "training": {
+    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/pi05_task1_right_arm_gripper_lora",
+    "batch_size": 16,
+    "steps": 20000,
+    "num_workers": 4,
+    "save_freq": 5000,
+    "log_freq": 100,
+    "seed": 1000,
+    "resume": false,
+    "resume_dir": null
+  },
+  "use_imagenet_stats": true,
+  "video_backend": "pyav"
+}

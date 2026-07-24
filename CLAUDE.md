@@ -5,6 +5,7 @@
 - 环境说明：使用`conda activate xhum-new && export PATH="/media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin:$PATH"`的环境来进行开发，具体可参考该环境内指向的 lerobot 源代码来进行基于 lerobot 框架的开发，但是不许修改该环境中指向的 lerobot 源代码
 - 功能实现：这是一个从零开始的项目，开发时注意简洁高效，以最小的代码量与依赖实现指定功能
 - 分支使用：进行修改前首先切换到`dev-les`分支上进行修改
+- 网络问题：如果遇到网络问题可以使用`export http_proxy=http://192.168.32.28:18000 && export https_proxy=http://192.168.32.28:18000`来挂代理
 
 ## 参考资料
 - G1 机器人二开资料：https://developer.galbot.com/docs/SDK/1.8.1/g1/zh

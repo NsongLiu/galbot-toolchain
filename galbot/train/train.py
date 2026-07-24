@@ -30,11 +30,14 @@ from galbot.train._compat import apply_lerobot_compat_patch
 apply_lerobot_compat_patch()
 
 from lerobot.configs.policies import PreTrainedConfig
+from lerobot.configs.types import NormalizationMode
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.factory import IMAGENET_STATS, resolve_delta_timestamps
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import cycle
 from lerobot.policies.factory import make_policy, make_policy_config, make_pre_post_processors
+from lerobot.policies.pi05.configuration_pi05 import PI05Config
+from lerobot.processor import PolicyProcessorPipeline, RenameObservationsProcessorStep
 from lerobot.scripts.lerobot_train import update_policy
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
@@ -54,6 +57,22 @@ PRETRAINED_MODEL_DIR = "pretrained_model"
 def load_config(path: str | Path) -> dict:
     with open(path) as f:
         return json.load(f)
+
+
+def _apply_policy_overrides(pol_cfg: PreTrainedConfig, policy_cfg: dict) -> None:
+    """Apply optional policy fields from training JSON (e.g. pi05 dtype, chunk_size)."""
+    if "normalization_mapping" in policy_cfg:
+        pol_cfg.normalization_mapping = {
+            key: NormalizationMode(value)
+            for key, value in policy_cfg["normalization_mapping"].items()
+        }
+
+    reserved = {"type", "path", "push_to_hub", "normalization_mapping"}
+    for key, value in policy_cfg.items():
+        if key in reserved:
+            continue
+        if hasattr(pol_cfg, key):
+            setattr(pol_cfg, key, value)
 
 
 def _save_checkpoint(
@@ -122,6 +141,9 @@ def train(cfg: dict) -> None:
     else:
         pol_cfg = make_policy_config(policy_cfg["type"])
 
+    # Apply JSON policy overrides (e.g. pi05 chunk_size, dtype, gradient_checkpointing).
+    _apply_policy_overrides(pol_cfg, policy_cfg)
+
     ds_meta = LeRobotDatasetMetadata(dataset_cfg["repo_id"], root=dataset_cfg["root"])
     delta_timestamps = resolve_delta_timestamps(pol_cfg, ds_meta)
 
@@ -151,14 +173,79 @@ def train(cfg: dict) -> None:
     if policy_cfg.get("path"):
         pol_cfg.pretrained_path = Path(policy_cfg["path"])
 
-    policy = make_policy(cfg=pol_cfg, ds_meta=ds.meta)
+    policy = make_policy(cfg=pol_cfg, ds_meta=ds.meta, rename_map=policy_cfg.get("rename_map"))
+
+    peft_cfg = cfg.get("peft")
+    if peft_cfg:
+        if is_main:
+            logging.info("Wrapping policy with PEFT: %s", pformat(peft_cfg))
+        policy = policy.wrap_with_peft(peft_cli_overrides=dict(peft_cfg))
 
     # --- pre/post processors ---
-    preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=pol_cfg,
-        pretrained_path=pol_cfg.pretrained_path if hasattr(pol_cfg, "pretrained_path") else None,
-        dataset_stats=ds.meta.stats,
-    )
+    processor_stats = ds.meta.stats
+    rename_map = policy_cfg.get("rename_map")
+    if isinstance(pol_cfg, PI05Config):
+        # PI05 processors must be built from code because the upstream pi05_base
+        # preprocessor config references steps not present in this lerobot version.
+        pol_cfg.device = device.type
+        # Use the local PaliGemma tokenizer bundled with the pretrained weights.
+        local_tokenizer_path = "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224"
+        from transformers import AutoTokenizer
+        from lerobot.processor import (
+            AddBatchDimensionProcessorStep,
+            DeviceProcessorStep,
+            NormalizerProcessorStep,
+            PolicyAction,
+            RenameObservationsProcessorStep,
+            UnnormalizerProcessorStep,
+        )
+        from lerobot.policies.pi05.processor_pi05 import Pi05PrepareStateTokenizerProcessorStep
+        from lerobot.processor.converters import policy_action_to_transition, transition_to_policy_action
+        from lerobot.processor.tokenizer_processor import TokenizerProcessorStep
+        from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
+
+        local_tokenizer = AutoTokenizer.from_pretrained(local_tokenizer_path, local_files_only=True)
+        rename_map = rename_map or {}
+        input_steps = [
+            RenameObservationsProcessorStep(rename_map=rename_map),
+            AddBatchDimensionProcessorStep(),
+            NormalizerProcessorStep(
+                features={**pol_cfg.input_features, **pol_cfg.output_features},
+                norm_map=pol_cfg.normalization_mapping,
+                stats=processor_stats,
+            ),
+            Pi05PrepareStateTokenizerProcessorStep(max_state_dim=pol_cfg.max_state_dim),
+            TokenizerProcessorStep(
+                tokenizer=local_tokenizer,
+                max_length=pol_cfg.tokenizer_max_length,
+                padding_side="right",
+                padding="max_length",
+            ),
+            DeviceProcessorStep(device=device.type),
+        ]
+        preprocessor = PolicyProcessorPipeline(
+            steps=input_steps,
+            name=POLICY_PREPROCESSOR_DEFAULT_NAME,
+        )
+        postprocessor = PolicyProcessorPipeline[PolicyAction, PolicyAction](
+            steps=[
+                UnnormalizerProcessorStep(
+                    features=pol_cfg.output_features,
+                    norm_map=pol_cfg.normalization_mapping,
+                    stats=processor_stats,
+                ),
+                DeviceProcessorStep(device="cpu"),
+            ],
+            name=POLICY_POSTPROCESSOR_DEFAULT_NAME,
+            to_transition=policy_action_to_transition,
+            to_output=transition_to_policy_action,
+        )
+    else:
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy_cfg=pol_cfg,
+            pretrained_path=pol_cfg.pretrained_path if hasattr(pol_cfg, "pretrained_path") else None,
+            dataset_stats=processor_stats,
+        )
 
     # --- optimizer / scheduler ---
     optimizer_cfg = pol_cfg.get_optimizer_preset()
