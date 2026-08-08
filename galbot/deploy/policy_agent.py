@@ -8,6 +8,7 @@ Loads a pretrained policy and exposes ``inference(obs)`` / ``reset()``.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +24,22 @@ from lerobot.configs.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 
+# --- pi05 / VLA 类策略的部署设置（ACT 等无语言条件的策略会忽略） ---
+# 任务指令：作为语言条件注入每个观测。切换任务时只需改这一行。
+PI05_TASK = "task1"
+# 本地 PaliGemma tokenizer 路径（离线加载）。早期 checkpoint 的 policy_preprocessor.json
+# 未保存 tokenizer 名，需在此显式指定；新 checkpoint 自带 tokenizer_name 时可置 None。
+PI05_TOKENIZER_PATH: str | None = "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224"
+
 
 class PolicyAgent:
     """Thin wrapper around a pretrained LeRobot policy for real-robot inference."""
 
     def __init__(self, model_path: str | Path):
         self.model_path = Path(model_path)
+        self.policy_type: str = ""
+        self._cam_aliases: dict[str, str] = {}  # policy 侧相机短名 -> 数据集相机短名
+        self._missing_cam_notified: set[str] = set()
         self.policy = self._load_policy()
         self.device = next(self.policy.parameters()).device
 
@@ -43,9 +54,15 @@ class PolicyAgent:
         self._load_pre_post_processors()
 
     def _load_policy(self) -> PreTrainedPolicy:
+        from lerobot.configs.policies import PreTrainedConfig
+        from lerobot.policies.factory import get_policy_class
+
         print(f"[PolicyAgent] Loading model from: {self.model_path}")
-        policy = PreTrainedPolicy.from_pretrained(self.model_path)
-        print(f"[PolicyAgent] Model loaded on {policy.config.device}")
+        cfg = PreTrainedConfig.from_pretrained(self.model_path)
+        # 策略类型（"act" / "pi05" / ...）从 checkpoint config 自动识别，无需手动切换。
+        self.policy_type = cfg.type
+        policy = get_policy_class(cfg.type).from_pretrained(self.model_path, config=cfg)
+        print(f"[PolicyAgent] Model loaded on {policy.config.device} (type={self.policy_type})")
         return policy
 
     def _parse_model_config(self) -> None:
@@ -78,14 +95,31 @@ class PolicyAgent:
                 flush=True,
             )
             return
+        # 相机短名别名：训练时 rename_map 把数据集相机名映射成了 policy 侧名称，
+        # 允许客户端/replay 继续发送数据集短名（如 front_head_right -> base_0_rgb）。
+        try:
+            for step in json.loads(pre_json.read_text()).get("steps", []):
+                if step.get("registry_name") == "rename_observations_processor":
+                    rename_map = (step.get("config") or {}).get("rename_map") or {}
+                    self._cam_aliases = {
+                        v.rsplit(".", maxsplit=1)[-1]: k.rsplit(".", maxsplit=1)[-1]
+                        for k, v in rename_map.items()
+                    }
+        except (json.JSONDecodeError, OSError):
+            pass
+
         dev = str(self.device)
+        pre_overrides: dict[str, Any] = {
+            "device_processor": {"device": dev, "float_dtype": None},
+            "rename_observations_processor": {"rename_map": {}},
+        }
+        if self.policy_type == "pi05" and PI05_TOKENIZER_PATH:
+            # 早期 checkpoint 的 policy_preprocessor.json 未保存 tokenizer 名，此处补上本地路径。
+            pre_overrides["tokenizer_processor"] = {"tokenizer_name": PI05_TOKENIZER_PATH}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
             pretrained_path=str(self.model_path),
-            preprocessor_overrides={
-                "device_processor": {"device": dev, "float_dtype": None},
-                "rename_observations_processor": {"rename_map": {}},
-            },
+            preprocessor_overrides=pre_overrides,
             postprocessor_overrides={"device_processor": {"device": dev, "float_dtype": None}},
         )
         print(
@@ -118,13 +152,22 @@ class PolicyAgent:
         # TO DEBUG: camera short-name mapping between robot SDK and model checkpoint.
         for model_key, (target_w, target_h) in self._image_keys.items():
             cam_name = model_key.rsplit(".", maxsplit=1)[-1]
-            if cam_name not in imgs:
+            img = imgs.get(cam_name)
+            if img is None and cam_name in self._cam_aliases:
+                img = imgs.get(self._cam_aliases[cam_name])
+            if img is None:
+                if self.policy_type == "pi05":
+                    # pi05 对缺失相机内部以零图 + mask=0 处理（openpi 行为），跳过即可。
+                    if cam_name not in self._missing_cam_notified:
+                        print(f"[PolicyAgent] camera {cam_name!r} not provided; model will mask it.", flush=True)
+                        self._missing_cam_notified.add(cam_name)
+                    continue
                 need = ", ".join(k.rsplit(".", maxsplit=1)[-1] for k in self._image_keys)
                 avail = ", ".join(sorted(imgs.keys()))
                 raise ValueError(
                     f"obs['images'] missing {cam_name!r} (model expects: {need}); got keys: [{avail}]"
                 )
-            img = cv2.resize(imgs[cam_name], dsize=(target_w, target_h))
+            img = cv2.resize(img, dsize=(target_w, target_h))
             img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             batch[model_key] = img_t.unsqueeze(0).to(self.device, non_blocking=True)
 
@@ -132,5 +175,9 @@ class PolicyAgent:
             state = obs["arm_gripper_joints"]
             state_t = torch.from_numpy(np.asarray(state, dtype=np.float32))
             batch[self._state_key] = state_t.unsqueeze(0).to(self.device, non_blocking=True)
+
+        if self.policy_type == "pi05":
+            # VLA 语言指令；preprocessor 的 AddBatchDimension 会包装成 [str]。
+            batch["task"] = PI05_TASK
 
         return batch

@@ -29,5 +29,5 @@ fi
 if [ "$NUM_GPUS" -le 1 ]; then
     exec python -m galbot.train.train --config "$CONFIG"
 else
-    exec accelerate launch --multi_gpu --num_processes "$NUM_GPUS" python -m galbot.train.train --config "$CONFIG"
+    exec accelerate launch --multi_gpu --num_processes "$NUM_GPUS" -m galbot.train.train --config "$CONFIG"
 fi

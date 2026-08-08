@@ -1,4 +1,7 @@
 # Minimal dependencies for the robot control side (no torch / LeRobot).
+# 注意：galbot_sdk 不在 pip 源中；真机(Orin)上位于 /userdata/update/manual_update/lib，
+# 由 YAML 的 robot.sdk_lib_path 在运行时注入 sys.path。
 pyzmq>=25.0
 numpy>=2.0
+opencv-python-headless>=4.9.0
 PyYAML>=6.0

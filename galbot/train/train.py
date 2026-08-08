@@ -67,7 +67,7 @@ def _apply_policy_overrides(pol_cfg: PreTrainedConfig, policy_cfg: dict) -> None
             for key, value in policy_cfg["normalization_mapping"].items()
         }
 
-    reserved = {"type", "path", "push_to_hub", "normalization_mapping"}
+    reserved = {"type", "path", "push_to_hub", "normalization_mapping", "tokenizer_path"}
     for key, value in policy_cfg.items():
         if key in reserved:
             continue
@@ -188,9 +188,10 @@ def train(cfg: dict) -> None:
         # PI05 processors must be built from code because the upstream pi05_base
         # preprocessor config references steps not present in this lerobot version.
         pol_cfg.device = device.type
-        # Use the local PaliGemma tokenizer bundled with the pretrained weights.
-        local_tokenizer_path = "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224"
-        from transformers import AutoTokenizer
+        # PaliGemma tokenizer: local dir path (offline) or HF hub name.
+        # 以名称（而非对象）传入，使保存 checkpoint 时 tokenizer_name 写入
+        # policy_preprocessor.json，部署端可自包含加载。
+        tokenizer_path = policy_cfg.get("tokenizer_path", "google/paligemma-3b-pt-224")
         from lerobot.processor import (
             AddBatchDimensionProcessorStep,
             DeviceProcessorStep,
@@ -204,7 +205,6 @@ def train(cfg: dict) -> None:
         from lerobot.processor.tokenizer_processor import TokenizerProcessorStep
         from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
 
-        local_tokenizer = AutoTokenizer.from_pretrained(local_tokenizer_path, local_files_only=True)
         rename_map = rename_map or {}
         input_steps = [
             RenameObservationsProcessorStep(rename_map=rename_map),
@@ -216,7 +216,7 @@ def train(cfg: dict) -> None:
             ),
             Pi05PrepareStateTokenizerProcessorStep(max_state_dim=pol_cfg.max_state_dim),
             TokenizerProcessorStep(
-                tokenizer=local_tokenizer,
+                tokenizer_name=tokenizer_path,
                 max_length=pol_cfg.tokenizer_max_length,
                 padding_side="right",
                 padding="max_length",
@@ -309,6 +309,23 @@ def train(cfg: dict) -> None:
         accelerator=accelerator,
     )
 
+    # --- wandb (optional) ---
+    wandb_cfg = cfg.get("wandb") or {}
+    wandb_run = None
+    if wandb_cfg.get("enable") and is_main:
+        import wandb
+
+        wandb_run = wandb.init(
+            project=wandb_cfg.get("project", "galbot"),
+            entity=wandb_cfg.get("entity"),
+            name=wandb_cfg.get("run_name") or output_dir.name,
+            notes=wandb_cfg.get("notes"),
+            mode=wandb_cfg.get("mode", "online"),
+            dir=str(output_dir),
+            config=cfg,
+        )
+        logging.info("Track this run --> %s", wandb_run.get_url())
+
     if is_main:
         progbar = tqdm(
             total=steps - step,
@@ -347,26 +364,33 @@ def train(cfg: dict) -> None:
 
         if is_log:
             logging.info(train_tracker)
+            if wandb_run is not None:
+                wandb_run.log({**train_tracker.to_dict(), **(output_dict or {})}, step=step)
             train_tracker.reset_averages()
 
-        if is_save and is_main:
-            logging.info("Saving checkpoint at step %d", step)
-            ckpt_dir = get_step_checkpoint_dir(output_dir, steps, step)
-            _save_checkpoint(
-                ckpt_dir,
-                step,
-                accelerator.unwrap_model(policy),
-                optimizer,
-                lr_scheduler,
-                preprocessor,
-                postprocessor,
-                cfg,
-            )
-            update_last_checkpoint(ckpt_dir)
+        if is_save:
+            # 仅主进程写盘；所有进程都参与 barrier，否则非主进程在下一个 DDP
+            # 集合通信中等待主进程，主进程又在 barrier 等它们，造成 NCCL 超时死锁。
+            if is_main:
+                logging.info("Saving checkpoint at step %d", step)
+                ckpt_dir = get_step_checkpoint_dir(output_dir, steps, step)
+                _save_checkpoint(
+                    ckpt_dir,
+                    step,
+                    accelerator.unwrap_model(policy),
+                    optimizer,
+                    lr_scheduler,
+                    preprocessor,
+                    postprocessor,
+                    cfg,
+                )
+                update_last_checkpoint(ckpt_dir)
             accelerator.wait_for_everyone()
 
     if is_main:
         progbar.close()
+        if wandb_run is not None:
+            wandb_run.finish()
         logging.info("Training complete.")
 
     accelerator.wait_for_everyone()

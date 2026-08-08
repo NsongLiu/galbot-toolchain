@@ -37,6 +37,24 @@ replay_max_steps: 0  # 0 = 使用整集
 video_backend: pyav
 
 # ---------------------------------------------------------------------------
+# mode=model 真机控制端参数（client_example.py 使用；默认值均为真机调通值）
+# ---------------------------------------------------------------------------
+robot:
+  # 真机(Orin)上 galbot_sdk 的系统路径；机器人控制环境已通过其他方式安装 SDK 时置 null
+  sdk_lib_path: /userdata/update/manual_update/lib
+  camera_warmup_sec: 5.0   # init 后等待相机出流
+  rgb_timeout_sec: 10.0    # get_rgb_data 超时（该调用可能阻塞）
+  sensors:                 # 相机短名 -> SensorType 枚举名（短名需与模型输入一致）
+    right_arm: RIGHT_ARM_CAMERA
+    front_head_right: HEAD_RIGHT_CAMERA
+  max_speed: 0.05          # 右臂关节速度上限
+  timeout: 1.0             # 阻塞式臂部指令超时（秒）
+  gripper_speed: 0.1
+  gripper_force: 10.0
+  gripper_min_raw: 35.0    # 夹爪 raw 限幅（真机安全范围）
+  gripper_max_raw: 100.0
+
+# ---------------------------------------------------------------------------
 # 可选：存图与关节向量落盘（用于校验 client 编码与 server 解码是否一致）
 # ---------------------------------------------------------------------------
 image_save:

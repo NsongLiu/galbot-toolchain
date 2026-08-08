@@ -144,6 +144,7 @@ PYTHONPATH=. python -m galbot.train.train \
 | `training.resume_dir` | 恢复时指定 checkpoint 目录 |
 | `use_imagenet_stats` | 是否用 ImageNet 统计量归一化图像 |
 | `video_backend` | 视频解码后端，通常 `pyav` |
+| `wandb` | 可选，Weights & Biases 日志（`enable`/`project`/`entity`/`run_name`/`mode`），详见 `pi05_tutorial.md` §4 |
 
 ### 输出产物
 
@@ -160,6 +161,15 @@ PYTHONPATH=. python -m galbot.train.train \
 - **机器人控制端** 运行在自己的环境（可能不同 conda / Python 版本），通过 `PolicyClient` 发送观测并接收动作，不依赖 torch / LeRobot。
 - **`replay`** 模式从 LeRobot V3 数据集读取轨迹观测，发送给 `policy_server` 验证 wire + model 链路，无需真实机器人。
 
+### 策略类型切换（ACT / PI0.5）
+
+`PolicyAgent` 从 checkpoint 的 `config.json` 自动识别策略类型（`act` / `pi05` 等），**切换策略只需把 `--model_path` 指向对应 checkpoint**，无需改代码。PI0.5 等 VLA 策略有两个额外部署常量（`galbot/deploy/policy_agent.py` 顶部）：
+
+- `PI05_TASK`：注入每个观测的语言指令（切换任务改这一行即可）；
+- `PI05_TOKENIZER_PATH`：本地 PaliGemma tokenizer 路径，供 `policy_preprocessor.json` 中缺少 `tokenizer_name` 的 checkpoint 使用（新训练代码产出的 checkpoint 已自包含，可置 `None`）。
+
+客户端 / replay 发送的相机键既可用 policy 侧短名（如 `base_0_rgb`），也可用数据集短名（如 `front_head_right`），agent 会按 checkpoint 导出的 rename_map 自动兼容。
+
 ### 文件结构
 
 ```
@@ -168,8 +178,8 @@ galbot/deploy/
 ├── policy_server.py       # ZMQ REP 服务端（策略环境）
 ├── policy_client.py       # ZMQ REQ 客户端（机器人控制环境，仅需 numpy + pyzmq）
 ├── replay.py              # LeRobot V3 数据集 -> ZMQ 回放（策略环境）
-├── client_example.py      # 最小客户端示例（连接 GalbotSDK + PolicyClient）
-├── robot_interface.py     # GalbotSDK 控制接口封装（get_observation / apply_action）
+├── client_example.py      # 真机控制循环（观测 -> ZMQ 推理 -> 动作下发，机器人控制端）
+├── robot_interface.py     # galbot_sdk.g1 真机接口封装（API 已在 G1 真机调通）
 ├── config_loader.py       # YAML 配置加载
 ├── wire/
 │   ├── obs_codec.py       # ZMQ multipart 编解码协议
@@ -198,9 +208,25 @@ galbot/deploy/
 ./scripts/deploy_replay.sh --config galbot/deploy/configs/deploy_example.yaml
 ```
 
-#### 3) 机器人控制端接入
+#### 3) 机器人控制端接入（真机部署）
 
-参考 `galbot/deploy/client_example.py` 或 `galbot/deploy/policy_client.py`：
+`client_example.py` 即真机控制循环（观测 -> ZMQ 推理 -> 动作下发）。`robot_interface.py` 中的 SDK 调用方式已按 G1 真机调通代码实现，观测/动作约定：
+
+- 观测：29 维 state（右臂7 + 底盘4 + 左臂7 + 头2 + 腿5 + 右夹爪 + 2×key占位0 + 左夹爪；夹爪由 SDK 的米换算为 0..100 原始尺度）+ 双相机 RGB（短名 `right_arm` / `front_head_right`，可在 YAML `robot.sensors` 配置）。
+- 动作：8 维 = 右臂 7 关节(rad) + 右夹爪(raw 0..100，限幅 35..100 后换算为米下发)。
+
+在机器人控制端（Orin）运行：
+
+```bash
+# dry-run（默认）：连接机器人 + 推理，但不下发动作，用于首上电检查链路
+./scripts/deploy_client.sh --config galbot/deploy/configs/my_deploy.yaml --steps 50
+
+# 实机执行：需显式确认口令；可选 --start-right-arm 先归位
+./scripts/deploy_client.sh --config galbot/deploy/configs/my_deploy.yaml --steps 300 \
+  --execute --acknowledge DEPLOY_MODEL
+```
+
+也可以只用 `PolicyClient` 自行集成：
 
 ```python
 from policy_client import PolicyClient
@@ -245,18 +271,22 @@ action_rate: 30.0
 | `action_rate` | replay 步进频率（Hz） |
 | `replay_max_steps` | replay 最大步数，0 表示整集 |
 | `obs_camera_key` | 指定发送到模型的相机短名；不设置则发送所有相机 |
+| `robot` | mode=model 真机参数：`sdk_lib_path`（Orin 上 SDK 路径）、`sensors`（相机短名->SensorType 枚举）、`camera_warmup_sec`、`rgb_timeout_sec`、`max_speed`、`timeout`、`gripper_speed`/`gripper_force`/`gripper_min_raw`/`gripper_max_raw` |
 | `image_save` | 客户端存图配置 |
 | `joints` | 关节向量落盘配置 |
 
 ### 调试标记（TO DEBUG）
 
-部署代码中所有需要结合实际机器人 SDK 或真实数据校验的位置均标注了 `# TO DEBUG:`，主要包括：
+部署代码中仍需结合实际情况校验的位置标注了 `# TO DEBUG:`：
 - 相机短名与模型 `input_features` 的映射（`policy_agent.py`、`replay.py`）。
-- 图像通道顺序、像素范围、resize 后形状。
-- `client_example.py` 中的 dummy observation 需替换为真实机器人 SDK 数据。
 - `dataset_root` / `episode_index` / `obs_camera_key` 需按实际数据集调整。
+
+> 真机 SDK 集成（`robot_interface.py`）已在 G1 真机调通，不再是 TO DEBUG 项；
+> 若更换相机或夹爪型号，检查 YAML `robot.sensors` 与夹爪限幅即可。
 
 ### 安全提示
 
+- 真机执行动作必须显式加 `--execute --acknowledge DEPLOY_MODEL`；默认 dry-run 不下发任何运动指令。
+- 夹爪指令在 `robot_interface.py` 内做 raw 35..100 限幅，臂部速度受 `robot.max_speed` 限制。
 - ZMQ TCP 默认无认证，单机部署请使用 `127.0.0.1`。
 - 跨机器请使用防火墙或 SSH 隧道。

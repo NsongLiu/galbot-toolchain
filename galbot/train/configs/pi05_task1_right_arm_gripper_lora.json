@@ -7,14 +7,15 @@
   "policy": {
     "type": "pi05",
     "path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/pi05_base",
+    "tokenizer_path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224",
     "push_to_hub": false,
     "rename_map": {
       "observation.images.front_head_right": "observation.images.base_0_rgb",
       "observation.images.right_arm": "observation.images.right_wrist_0_rgb"
     },
     "normalization_mapping": {
-      "ACTION": "QUANTILES",
-      "STATE": "QUANTILES",
+      "ACTION": "MEAN_STD",
+      "STATE": "MEAN_STD",
       "VISUAL": "IDENTITY"
     },
     "gradient_checkpointing": true,
@@ -37,8 +38,8 @@
   },
   "peft": {
     "method_type": "LORA",
-    "r": 16,
-    "target_modules": null,
+    "r": 32,
+    "target_modules": "(.*\\.gemma_expert\\..*\\.(self_attn\\.(q|k|v|o)_proj|mlp\\.(gate|up|down)_proj)|.*\\.paligemma\\.model\\.language_model\\..*\\.(self_attn\\.(q|k|v|o)_proj|mlp\\.(gate|up|down)_proj)|model\\.(action_in_proj|action_out_proj|time_mlp_in|time_mlp_out))",
     "full_training_modules": null,
     "init_type": null
   },
@@ -54,5 +55,12 @@
     "resume_dir": null
   },
   "use_imagenet_stats": true,
-  "video_backend": "pyav"
+  "video_backend": "pyav",
+  "wandb": {
+    "enable": true,
+    "project": "galbot-pi05",
+    "entity": "leslie126-peking-university",
+    "run_name": "pi05_task1_right_arm_gripper_lora",
+    "mode": "online"
+  }
 }

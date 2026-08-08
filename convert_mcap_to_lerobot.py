@@ -1,18 +1,42 @@
 #!/usr/bin/env python
-"""Convert Galbot G1 MCAP protobuf recordings to a LeRobot V3 dataset."""
+"""Convert Galbot G1 MCAP protobuf recordings to a LeRobot V3 dataset.
+
+Streaming conversion（参照 xhum hdf5_to_lerobot.py 的做法）：
+  - 每个 episode 只单遍扫描 MCAP：数值流（sensor/target）直接解析，
+    相机帧保留压缩字节，仅解码时间轴实际选中的帧；
+  - JPEG 解码用线程池并行（--decode-workers）；
+  - 视频走 LeRobot streaming encoder（帧直接进编码器，不再先写临时 PNG 再读回）。
+
+差一帧 bug 防护：LeRobot streaming encoder 的队列满 100ms 后会丢帧而不是阻塞
+（video_utils.py feed_frame），默认队列 30 会让视频帧数少于 parquet 帧数。
+本脚本按 MCAP summary 统计把队列设为能容纳最长 episode（--encoder-queue-maxsize
+可覆盖），并在转换结束后用 ffprobe 逐相机核对视频帧数与 parquet 总帧数。
+"""
 
 import argparse
 import bisect
 import json
+import logging
+import os
+import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
 import numpy as np
+from mcap.reader import make_reader
 from mcap_protobuf.reader import read_protobuf_messages
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
+# Disable OpenCV internal threading to avoid deadlocks/contention when we run
+# many decode workers in a ThreadPoolExecutor.
+cv2.setNumThreads(0)
+
+SENSOR_TOPIC = "singorix/wbcs/sensor"
+TARGET_TOPIC = "singorix/wbcs/target"
 
 # Fixed group order observed in the sensor messages. Total = 29 joints.
 STATE_GROUPS = [
@@ -99,9 +123,8 @@ def parse_target_positions(target_msg, group: str) -> list[float]:
     return [cmd.position for cmd in group_target.group_commands[0].joint_commands]
 
 
-def decode_image(compressed_image_msg) -> np.ndarray:
-    """Decode a CompressedImage protobuf message to an RGB numpy array."""
-    data = compressed_image_msg.data
+def decode_image(data: bytes) -> np.ndarray:
+    """Decode compressed image bytes (JPEG/PNG) to an RGB numpy array."""
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("Failed to decode compressed image")
@@ -115,7 +138,7 @@ def build_robot_config(
     action_groups: list[tuple[str, int]],
 ) -> dict:
     """Build a robot joint configuration JSON from the first sensor message."""
-    for m in read_protobuf_messages(mcap_path, topics=["singorix/wbcs/sensor"]):
+    for m in read_protobuf_messages(mcap_path, topics=[SENSOR_TOPIC]):
         sensor_msg = m.proto_msg
         break
     else:
@@ -160,39 +183,45 @@ def read_mcap_file(
     action_groups: list[tuple[str, int]],
     camera_topics: dict[str, str],
 ):
-    """Read one MCAP file and return structured data for conversion."""
-    # Sensor: full body state.
+    """Single-pass streaming read of one MCAP file.
+
+    Numeric streams (sensor/target) are parsed directly; camera frames are kept
+    as compressed bytes and decoded later only for the frames the timeline
+    actually selects. read_protobuf_messages yields in log-time order
+    (log_time_order=True by default), so every per-topic stream is sorted.
+    """
+    topic_to_key = {topic: key for key, topic in camera_topics.items()}
+    topics = [SENSOR_TOPIC, TARGET_TOPIC, *topic_to_key]
+
     sensor_times = []
     sensor_states = []
-    for m in read_protobuf_messages(mcap_path, topics=["singorix/wbcs/sensor"]):
-        sensor_times.append(m.log_time_ns)
-        sensor_states.append(build_state_vector(m.proto_msg))
-
-    # Targets: per-group action commands.
     target_times = {group: [] for group, _ in action_groups}
     target_values = {group: [] for group, _ in action_groups}
-    for m in read_protobuf_messages(mcap_path, topics=["singorix/wbcs/target"]):
-        for group, _ in action_groups:
-            if group in m.proto_msg.target_group_trajectory_map:
-                positions = parse_target_positions(m.proto_msg, group)
-                if positions:
-                    target_times[group].append(m.log_time_ns)
-                    target_values[group].append(positions)
+    # key -> {log_time_ns: compressed bytes}; dedup by timestamp keeps the first
+    # frame (some arm camera recordings contain duplicate timestamps).
+    camera_frames = {key: {} for key in camera_topics}
 
-    # Color cameras. Deduplicate by timestamp, keeping the first frame for each
-    # timestamp. Some arm camera recordings contain duplicate timestamps, so we
-    # use the unique timestamps as the canonical timeline.
+    for m in read_protobuf_messages(mcap_path, topics=topics):
+        key = topic_to_key.get(m.topic)
+        if key is not None:
+            camera_frames[key].setdefault(m.log_time_ns, m.proto_msg.data)
+        elif m.topic == SENSOR_TOPIC:
+            sensor_times.append(m.log_time_ns)
+            sensor_states.append(build_state_vector(m.proto_msg))
+        else:  # TARGET_TOPIC
+            for group, _ in action_groups:
+                if group in m.proto_msg.target_group_trajectory_map:
+                    positions = parse_target_positions(m.proto_msg, group)
+                    if positions:
+                        target_times[group].append(m.log_time_ns)
+                        target_values[group].append(positions)
+
     camera_times = {}
-    camera_images = {}
-    for key, topic in camera_topics.items():
-        frame_by_time = {}
-        for m in read_protobuf_messages(mcap_path, topics=[topic]):
-            t = m.log_time_ns
-            if t not in frame_by_time:
-                frame_by_time[t] = decode_image(m.proto_msg)
-        times = sorted(frame_by_time.keys())
+    camera_payloads = {}
+    for key, frames in camera_frames.items():
+        times = sorted(frames.keys())
         camera_times[key] = times
-        camera_images[key] = [frame_by_time[t] for t in times]
+        camera_payloads[key] = [frames[t] for t in times]
 
     return {
         "sensor_times": sensor_times,
@@ -200,7 +229,7 @@ def read_mcap_file(
         "target_times": target_times,
         "target_values": target_values,
         "camera_times": camera_times,
-        "camera_images": camera_images,
+        "camera_payloads": camera_payloads,
     }
 
 
@@ -248,26 +277,167 @@ def get_action_at_time(
     return np.array(vec, dtype=np.float32)
 
 
-def get_camera_image_at_time(camera_times, camera_images, key: str, t_ns: int, tolerance_ns: int):
-    """Return the image for a camera nearest to t_ns, within tolerance."""
-    times = camera_times[key]
-    images = camera_images[key]
-    idx = nearest_index(times, t_ns)
-    if abs(times[idx] - t_ns) > tolerance_ns:
-        raise ValueError(
-            f"No {key} camera frame within tolerance for timestamp {t_ns}"
-        )
-    return images[idx]
+def select_camera_indices(times: list[int], master_times: list[int], key: str, tolerance_ns: int) -> list[int]:
+    """Per master timestamp, the index of the nearest camera frame within tolerance."""
+    indices = []
+    for t_ns in master_times:
+        idx = nearest_index(times, t_ns)
+        if abs(times[idx] - t_ns) > tolerance_ns:
+            raise ValueError(
+                f"No {key} camera frame within tolerance for timestamp {t_ns}"
+            )
+        indices.append(idx)
+    return indices
 
 
-def get_image_shapes(camera_images: dict) -> dict[str, tuple[int, int, int]]:
-    """Infer image shapes from the first decoded frame of each camera."""
+def get_image_shapes(camera_payloads: dict[str, list[bytes]]) -> dict[str, tuple[int, int, int]]:
+    """Infer image shapes by decoding the first frame of each camera."""
     shapes = {}
-    for key, images in camera_images.items():
-        if not images:
+    for key, payloads in camera_payloads.items():
+        if not payloads:
             raise ValueError(f"No images for camera {key}")
-        shapes[key] = tuple(images[0].shape)
+        shapes[key] = tuple(decode_image(payloads[0]).shape)
     return shapes
+
+
+def plan_encoder_queue(mcap_files: list[Path], master_topic: str, cap: int = 4096) -> int:
+    """Pick an encoder queue size that makes LeRobot's frame-drop path unreachable.
+
+    The streaming encoder drops a frame whenever its queue stays full for 100ms
+    (video_utils.py feed_frame). A queue that can hold the longest episode never
+    fills, so no frame is dropped. Episode lengths come from the MCAP summary's
+    per-channel message counts — a metadata-only read. The count is taken before
+    timestamp dedup, so it is a safe upper bound.
+    """
+    longest = 0
+    for path in mcap_files:
+        try:
+            with open(path, "rb") as f:
+                summary = make_reader(f).get_summary()
+        except OSError:
+            continue
+        if summary is None or summary.statistics is None:
+            continue
+        counts = summary.statistics.channel_message_counts
+        for ch_id, channel in summary.channels.items():
+            if channel.topic == master_topic:
+                longest = max(longest, counts.get(ch_id, 0))
+
+    if longest == 0:
+        print("WARNING: could not read MCAP summary statistics; using encoder queue of 1024 frames.")
+        return 1024
+    if longest > cap:
+        print(
+            f"WARNING: longest episode is {longest} frames but the encoder queue is capped at {cap};"
+            " frames may still be dropped. The post-conversion check will report it."
+        )
+        return cap
+    print(f"Encoder queue: {longest} frames (longest episode).")
+    return longest
+
+
+def _count_frames(mp4: Path, *, exact: bool) -> int:
+    """Frame count of one mp4. ``exact`` decodes every packet instead of trusting the header."""
+    entry = "stream=nb_read_frames" if exact else "stream=nb_frames"
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0"]
+    if exact:
+        cmd.append("-count_frames")
+    cmd += ["-show_entries", entry, "-of", "default=nw=1:nk=1", str(mp4)]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
+    return int(out) if out.isdigit() else -1
+
+
+def verify_video_frames(dataset_root: Path) -> bool:
+    """Check that every camera's video holds exactly as many frames as the parquet data.
+
+    LeRobot's streaming encoder silently drops frames when its queue is full, so a
+    conversion can look successful while a camera is short a few frames (差一帧 bug).
+    Counting them back out is the only reliable way to notice.
+    """
+    info_path = dataset_root / "meta" / "info.json"
+    if not info_path.exists():
+        print(f"WARNING: verify: info.json not found at {info_path}, skipping check")
+        return True
+
+    with open(info_path) as f:
+        expected = json.load(f).get("total_frames")
+    if not expected:
+        print("WARNING: verify: total_frames missing from info.json, skipping check")
+        return True
+
+    ok = True
+    for cam_dir in sorted((dataset_root / "videos").glob("*")):
+        if not cam_dir.is_dir():
+            continue
+        mp4s = sorted(cam_dir.rglob("*.mp4"))
+        counts = [_count_frames(m, exact=False) for m in mp4s]
+        # Fall back to decoding for any file whose header does not carry a count.
+        for idx, (m, n) in enumerate(zip(mp4s, counts, strict=True)):
+            if n < 0:
+                counts[idx] = _count_frames(m, exact=True)
+        total = sum(max(n, 0) for n in counts)
+
+        if total != expected:
+            # Only pay for a full decode when the headers disagree, to avoid false alarms.
+            total = sum(max(_count_frames(m, exact=True), 0) for m in mp4s)
+
+        if total == expected:
+            print(f"verify: {cam_dir.name} {total}/{expected} frames OK")
+        else:
+            ok = False
+            print(f"ERROR: verify: {cam_dir.name} {total}/{expected} frames — {expected - total} MISSING")
+    return ok
+
+
+def process_episode(
+    data: dict,
+    dataset: LeRobotDataset,
+    task: str,
+    action_groups: list[tuple[str, int]],
+    camera_topics: dict[str, str],
+    tolerance_ns: int,
+    decode_workers: int,
+) -> int:
+    """Decode selected frames and add one episode to the dataset."""
+    master_key = choose_master_camera(camera_topics)
+    master_times = data["camera_times"][master_key]
+    if not master_times:
+        raise ValueError("No master camera frames in episode")
+
+    # Per camera, the frame indices selected by the master timeline (same
+    # nearest-within-tolerance semantics as the non-streaming converter).
+    selected = {
+        key: select_camera_indices(data["camera_times"][key], master_times, key, tolerance_ns)
+        for key in camera_topics
+    }
+
+    # Decode only the selected frames; dedup repeats first, then map back in
+    # timeline order. One thread pool is shared by all cameras of the episode.
+    decoded = {}
+    with ThreadPoolExecutor(max_workers=decode_workers) as pool:
+        for key in camera_topics:
+            payloads = data["camera_payloads"][key]
+            unique_indices = sorted(set(selected[key]))
+            buffers = [payloads[i] for i in unique_indices]
+            images = list(pool.map(decode_image, buffers))
+            lut = dict(zip(unique_indices, images))
+            decoded[key] = [lut[i] for i in selected[key]]
+
+    for frame_idx, t_ns in enumerate(master_times):
+        frame = {
+            "task": task,
+            "observation.state": get_state_at_time(
+                data["sensor_times"], data["sensor_states"], t_ns
+            ),
+            "action": get_action_at_time(
+                data["target_times"], data["target_values"], t_ns, action_groups
+            ),
+        }
+        for key in camera_topics:
+            frame[f"observation.images.{key}"] = decoded[key][frame_idx]
+        dataset.add_frame(frame)
+
+    return len(master_times)
 
 
 def convert_mcap_to_lerobot(
@@ -282,6 +452,9 @@ def convert_mcap_to_lerobot(
     robot_config_path: Path,
     action_groups: list[tuple[str, int]],
     camera_topics: dict[str, str],
+    streaming_encoding: bool,
+    encoder_queue_maxsize: int,
+    decode_workers: int,
 ):
     mcap_files = sorted([p for p in mcap_dir.rglob("*.mcap") if "SYNC" in p.name])
     if not mcap_files:
@@ -296,9 +469,15 @@ def convert_mcap_to_lerobot(
         json.dump(robot_config, f, indent=2, ensure_ascii=False)
     print(f"Robot config written to {robot_config_path}")
 
+    if streaming_encoding and use_videos and encoder_queue_maxsize <= 0:
+        master_topic = camera_topics[choose_master_camera(camera_topics)]
+        encoder_queue_maxsize = plan_encoder_queue(mcap_files, master_topic)
+    elif encoder_queue_maxsize <= 0:
+        encoder_queue_maxsize = 30  # LeRobot default; unused without streaming encoding
+
     # Read the first file to infer image shapes before creating the dataset.
     first_data = read_mcap_file(mcap_files[0], action_groups, camera_topics)
-    image_shapes = get_image_shapes(first_data["camera_images"])
+    image_shapes = get_image_shapes(first_data["camera_payloads"])
 
     action_dim = sum(count for _, count in action_groups)
     features = {
@@ -328,50 +507,46 @@ def convert_mcap_to_lerobot(
         robot_type=robot_type,
         use_videos=use_videos,
         vcodec=vcodec,
+        # 帧直接进视频编码器，不再先写临时 PNG 再读回；帧数据与默认路径一致，
+        # 仅图像统计量由全量累计（默认路径为采样估计）。
+        streaming_encoding=streaming_encoding,
+        encoder_queue_maxsize=encoder_queue_maxsize,
     )
 
     half_interval_ns = int(1e9 / fps)
 
     for episode_idx, mcap_path in enumerate(mcap_files):
         print(f"\nConverting episode {episode_idx}: {mcap_path.name}")
-        data = read_mcap_file(mcap_path, action_groups, camera_topics)
+        t0 = time.perf_counter()
+        data = first_data if episode_idx == 0 else read_mcap_file(
+            mcap_path, action_groups, camera_topics
+        )
+        t_read = time.perf_counter() - t0
 
-        master_key = choose_master_camera(camera_topics)
-        master_times = data["camera_times"][master_key]
-        if not master_times:
-            raise ValueError(f"No master camera frames in {mcap_path.name}")
-
-        start_ns = master_times[0]
-        for frame_idx, t_ns in enumerate(master_times):
-            state = get_state_at_time(
-                data["sensor_times"], data["sensor_states"], t_ns
-            )
-            action = get_action_at_time(
-                data["target_times"], data["target_values"], t_ns, action_groups
-            )
-
-            frame = {
-                "task": task,
-                "observation.state": state,
-                "action": action,
-            }
-
-            for key in camera_topics:
-                frame[f"observation.images.{key}"] = get_camera_image_at_time(
-                    data["camera_times"],
-                    data["camera_images"],
-                    key,
-                    t_ns,
-                    half_interval_ns,
-                )
-
-            dataset.add_frame(frame)
-
+        num_frames = process_episode(
+            data,
+            dataset,
+            task,
+            action_groups,
+            camera_topics,
+            half_interval_ns,
+            decode_workers,
+        )
         dataset.save_episode()
-        print(f"  Saved episode {episode_idx} with {len(master_times)} frames")
+        print(
+            f"  Saved episode {episode_idx} with {num_frames} frames "
+            f"(read {t_read:.1f}s, total {time.perf_counter() - t0:.1f}s)"
+        )
 
     dataset.finalize()
     print(f"\nDataset saved to {out_dir}")
+
+    if use_videos and not verify_video_frames(out_dir):
+        print(
+            "ERROR: frame count mismatch — the encoder dropped frames. Re-run with a larger"
+            " --encoder-queue-maxsize, or with --no-streaming-encoding."
+        )
+        sys.exit(1)
 
 
 def main():
@@ -450,10 +625,46 @@ def main():
             "front_head_right. Defaults to all cameras. Example: --cameras right_arm front_head_right"
         ),
     )
+    parser.add_argument(
+        "--no-streaming-encoding",
+        dest="streaming_encoding",
+        action="store_false",
+        help=(
+            "Fall back to LeRobot's default path, which buffers every frame as a temporary"
+            " PNG before encoding. Much slower and writes far more scratch data."
+        ),
+    )
+    parser.set_defaults(streaming_encoding=True)
+    parser.add_argument(
+        "--encoder-queue-maxsize",
+        type=int,
+        default=0,
+        help=(
+            "Frames buffered per camera when streaming to the encoder. LeRobot drops frames"
+            " instead of blocking once this queue is full, so it must be able to hold a whole"
+            " episode. Default 0 sizes it from the longest episode via MCAP summary statistics."
+        ),
+    )
+    parser.add_argument(
+        "--decode-workers",
+        type=int,
+        default=0,
+        help=(
+            "Thread count for parallel JPEG decode per episode (0 = auto: min(8, CPU count))."
+            " Does not parallelize LeRobot dataset writes; use 1 if memory is tight."
+        ),
+    )
     args = parser.parse_args()
+
+    # Suppress ffmpeg/libav "moov atom" info logs
+    os.environ.setdefault("AV_LOG_FORCE_NOCOLOR", "1")
+    logging.getLogger("libav").setLevel(logging.ERROR)
 
     action_groups = parse_action_groups(args.action_groups)
     camera_topics = select_camera_topics(args.cameras)
+    decode_workers = args.decode_workers
+    if decode_workers <= 0:
+        decode_workers = min(8, (os.cpu_count() or 4))
 
     convert_mcap_to_lerobot(
         mcap_dir=args.mcap_dir,
@@ -467,6 +678,9 @@ def main():
         robot_config_path=args.robot_config,
         action_groups=action_groups,
         camera_topics=camera_topics,
+        streaming_encoding=args.streaming_encoding,
+        encoder_queue_maxsize=args.encoder_queue_maxsize,
+        decode_workers=decode_workers,
     )
 
 

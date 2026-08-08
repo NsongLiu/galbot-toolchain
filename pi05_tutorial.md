@@ -52,7 +52,7 @@ conda activate <CONDA_ENV>
 训练全程可以不访问 HuggingFace：
 
 - 启动脚本 `train_task1_right_arm_gripper_pi05.sh` 默认导出 `HF_HUB_OFFLINE=1`（可用环境变量覆盖）。
-- PaliGemma tokenizer 从本地目录加载（见 §2），不走 `google/paligemma-3b-pt-224` 在线下载。注意：该本地路径目前在 `galbot/train/train.py` 的 PI0.5 分支中以 `local_tokenizer_path` 指定，迁移到新环境时请改为本机实际路径（`<PRETRAINED_DIR>/paligemma-3b-pt-224`）。
+- PaliGemma tokenizer 从本地目录加载（见 §2），不走 `google/paligemma-3b-pt-224` 在线下载。路径通过配置项 `policy.tokenizer_path` 指定（默认值为 HF 名称 `google/paligemma-3b-pt-224`，离线环境下请务必在配置中显式指向本地目录，如 `<PRETRAINED_DIR>/paligemma-3b-pt-224`）。
 - PI0.5 的 pre/post processor 在 `galbot/train/train.py` 中**本地逐步组装**，而非调用 LeRobot 的 `make_pi05_pre_post_processors()`——后者内部会联网加载 tokenizer，离线环境下直接报 `OSError: Can't load the configuration of 'google/paligemma-3b-pt-224'`。postprocessor 由 `UnnormalizerProcessorStep + DeviceProcessorStep` 两步构成，与官方实现语义一致。
 
 ### 1.5 PEFT 依赖（仅 LoRA 模式需要）
@@ -145,6 +145,7 @@ All keys loaded successfully!
   "policy": {
     "type": "pi05",
     "path": "<PRETRAINED_DIR>/pi05_base",
+    "tokenizer_path": "<PRETRAINED_DIR>/paligemma-3b-pt-224",
     "optimizer_lr": 2.5e-5,
     "freeze_vision_encoder": false,
     "train_expert_only": false,
@@ -178,8 +179,8 @@ All keys loaded successfully!
   "policy": { "..." : "..." },
   "peft": {
     "method_type": "LORA",
-    "r": 16,
-    "target_modules": null,
+    "r": 32,
+    "target_modules": "(.*\\.gemma_expert\\..*\\.(self_attn\\.(q|k|v|o)_proj|mlp\\.(gate|up|down)_proj)|.*\\.paligemma\\.model\\.language_model\\..*\\.(self_attn\\.(q|k|v|o)_proj|mlp\\.(gate|up|down)_proj)|model\\.(action_in_proj|action_out_proj|time_mlp_in|time_mlp_out))",
     "full_training_modules": null,
     "init_type": null
   }
@@ -198,16 +199,34 @@ All keys loaded successfully!
 | `full_training_modules` | 不参与 LoRA、直接全量训练的模块名（映射到 `modules_to_save`） | `null` |
 | `init_type` | LoRA 初始化方式（映射到 `init_lora_weights`） | `null` |
 
-#### PI0.5 默认 LoRA 目标
+#### PI0.5 LoRA 目标与参数量
 
-`target_modules=null` 时，`PI05Policy._get_default_peft_targets()` 注入：
+`target_modules=null` 时使用 lerobot 内置默认（`PI05Policy._get_default_peft_targets()`）：
 
 ```
 (.*\.gemma_expert\..*\.self_attn\.(q|v)_proj
  | model\.(state_proj|action_in_proj|action_out_proj|action_time_mlp_in|action_time_mlp_out))
 ```
 
-即仅对 **action expert（Gemma expert）的 self-attention Q/V 投影** 以及 **state/action 投影层** 加 LoRA，VLM 主干保持冻结。
+注意该默认正则有两个**死目标**：`state_proj` 在 pi05 中不存在；`action_time_mlp_in/out` 与 pi05 实际模块名 `time_mlp_in/out` 不匹配。因此默认配置实际只对 **expert 18 层的 Q/V 投影 + action_in/out_proj** 加 LoRA，可训练参数仅约 **1.3M**（r=16），通常偏少。
+
+本仓库 LoRA 配置改为显式扩大目标（VLM 语言模型 + action expert 的全部 attention/MLP + 时间/动作投影，r=32，约 **53M**）：
+
+```
+(.*\.gemma_expert\..*\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)
+ |.*\.paligemma\.model\.language_model\..*\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)
+ | model\.(action_in_proj|action_out_proj|time_mlp_in|time_mlp_out))
+```
+
+peft 对模块名做 `re.fullmatch` 匹配，可按需调整。注意 `lm_head`、`embed_tokens` 与视觉塔不应纳入（词表维度 257152，LoRA 代价远大于收益）。参数量对照（r=32）：
+
+| 目标范围 | 可训练参数（约） |
+|---------|------------------|
+| expert Q/V（lerobot 默认，r=16） | 1.3M |
+| expert 全部 attn + MLP + 投影层 | 14M |
+| 上述 + VLM 语言模型全部 attn + MLP（**本仓库配置**） | 53M（expert 14M + VLM 39M） |
+
+LoRA 只增加可训练参数本身的优化器状态，显存开销很小；但 VLM 覆盖后梯度需穿过整个语言模型，训练步耗时与激活显存会略有上升（已开启 gradient_checkpointing）。
 
 #### LoRA 训练超参调整
 
@@ -231,6 +250,32 @@ All keys loaded successfully!
   galbot/train/configs/pi05_task1_right_arm_gripper_lora.json
 ```
 
+#### Weights & Biases 日志（可选）
+
+顶层新增 `wandb` 段即可开启训练指标（loss、lr、grad_norm 等）上报，仅主进程记录：
+
+```json
+{
+  "wandb": {
+    "enable": true,
+    "project": "galbot-pi05",
+    "entity": "<your-wandb-entity>",
+    "run_name": "pi05_task1_right_arm_gripper_lora",
+    "mode": "online"
+  }
+}
+```
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `enable` | 是否启用 wandb；缺省或 `false` 时整段忽略 | `false` |
+| `project` | wandb 项目名 | `galbot` |
+| `entity` | wandb 团队/用户名 | `null` |
+| `run_name` | run 名称；`null` 时用 `output_dir` 目录名 | `null` |
+| `mode` | `online` / `offline` / `disabled`；无网环境用 `offline`，事后 `wandb sync <output_dir>/wandb/latest-run` | `online` |
+
+> `online` 模式需要先 `wandb login`（API key）。`wandb` 段是通用配置，ACT / PI0.5 全参数 / LoRA 配置均可使用。
+
 ---
 
 ## 5. Checkpoint 结构
@@ -253,6 +298,15 @@ output_dir/
 
 **LoRA 恢复推理**：`policy.path` 指向 LoRA checkpoint 目录即可。`config.json` 中 `use_peft=true`，`make_policy` 会读取 `adapter_config.json` 中的 `base_model_name_or_path` 自动加载基座 + adapter。
 
+### 5.1 部署（policy_server）
+
+训练产出的 checkpoint 可直接由 `galbot/deploy/policy_agent.py` 加载（见 `README.md` 第 3 节）：
+
+- 策略类型从 `config.json` 的 `type` 字段自动识别，ACT / PI0.5 切换只需更换 `--model_path`；
+- PI0.5 的语言指令由部署端常量 `PI05_TASK` 注入（`policy_agent.py` 顶部，默认 `"task1"`，切换任务改这一行即可）；
+- 若 checkpoint 的 `policy_preprocessor.json` 缺少 `tokenizer_name`（旧训练代码以 tokenizer 对象传入时的产物），部署端通过 `PI05_TOKENIZER_PATH` 常量补齐本地 tokenizer 路径；新训练代码（tokenizer 按名称传入）产出的 checkpoint 自包含，无需该常量；
+- 相机键兼容：客户端可发送数据集短名（`front_head_right`、`right_arm`）或 policy 侧短名（`base_0_rgb`、`right_wrist_0_rgb`），agent 按导出的 rename_map 自动映射。
+
 ---
 
 ## 6. 常见问题
@@ -267,7 +321,7 @@ output_dir/
 
 ### Q3: 报错 `OSError: Can't load the configuration of 'google/paligemma-3b-pt-224'`
 
-有代码路径尝试在线加载 PaliGemma tokenizer。确认：① 启动脚本已导出 `HF_HUB_OFFLINE=1`；② 使用的是最新 `galbot/train/train.py`——PI0.5 的 pre/post processor 已在本地组装（见 §1.4），不会再调用联网的 `make_pi05_pre_post_processors()`；③ `train.py` 中的 `local_tokenizer_path` 指向本机实际 tokenizer 目录。
+有代码路径尝试在线加载 PaliGemma tokenizer。确认：① 启动脚本已导出 `HF_HUB_OFFLINE=1`；② 使用的是最新 `galbot/train/train.py`——PI0.5 的 pre/post processor 已在本地组装（见 §1.4），不会再调用联网的 `make_pi05_pre_post_processors()`；③ 配置中的 `policy.tokenizer_path` 指向本机实际 tokenizer 目录。
 
 ### Q4: 如何确认视觉编码器权重加载成功？
 
