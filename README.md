@@ -29,6 +29,20 @@ python convert_mcap_to_lerobot.py \
 
 > 脚本中 `--mcap-dir` / `--out-dir` 的内置默认值仅为作者本机预设，实际使用请显式指定。
 
+### 实际任务示例（task8，右臂+夹爪）
+
+仓库内现有数据集均按“每任务一个子目录”组织（`lerobot_v3/task2_right_arm_gripper` 等），动作取右臂 7 关节 + 右夹爪，相机取右腕 + 头部右侧：
+
+```bash
+python convert_mcap_to_lerobot.py \
+  --mcap-dir <WORKSPACE>/raw/task8 \
+  --out-dir <WORKSPACE>/lerobot_v3/task8_right_arm_gripper \
+  --repo-id task8_right_arm_gripper \
+  --task task8 \
+  --action-groups right_arm,7 right_gripper,1 \
+  --cameras right_arm front_head_right
+```
+
 ### 转换规则
 
 - `FIN`：源数据
@@ -40,21 +54,33 @@ python convert_mcap_to_lerobot.py \
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `--mcap-dir` | MCAP 源数据目录 | `<WORKSPACE>/tmp`（内置预设，建议显式指定） |
+| `--mcap-dir` | MCAP 源数据目录（递归扫描，仅处理文件名含 `SYNC` 的文件） | `<WORKSPACE>/tmp`（内置预设，建议显式指定） |
 | `--out-dir` | LeRobot V3 目标数据集目录 | `<WORKSPACE>/lerobot_v3`（同上） |
-| `--repo-id` | 数据集元数据中的 repo ID | `galbot/g1_recordings` |
+| `--repo-id` | 数据集元数据中的 repo ID（建议与目标目录名一致） | `galbot/g1_recordings` |
 | `--fps` | 目标帧率 | `30` |
 | `--vcodec` | 视频编码格式，可选 `h264`/`hevc`/`libsvtav1` | `h264` |
 | `--use-images` | 将相机数据存为 PNG 图片而非视频 | 未启用 |
 | `--task` | 任务描述 | `teleoperate the left arm` |
 | `--robot-type` | 机器人类型 | `galbot_g1` |
 | `--robot-config` | 机器人关节配置 JSON 输出路径 | `./robot_config.json` |
+| `--action-groups` | 从 `singorix/wbcs/target` 提取的动作组，格式 `名称,关节数` | `left_arm,7 left_gripper,1` |
+| `--cameras` | 包含的相机，可选 `left_arm`/`right_arm`/`front_head_left`/`front_head_right` | 全部 4 个 |
+| `--decode-workers` | JPEG 并行解码线程数（0 = min(8, CPU 核数)） | `0` |
+| `--no-streaming-encoding` | 回退到 LeRobot 默认编码路径（每帧先写临时 PNG 再编码，明显更慢） | 未启用（默认 streaming） |
+| `--encoder-queue-maxsize` | streaming 编码器每相机缓冲帧数（0 = 按 MCAP summary 统计的最长 episode 自动设置） | `0` |
 
 查看全部参数：
 
 ```bash
 python convert_mcap_to_lerobot.py --help
 ```
+
+### streaming 转换与帧数校验
+
+转换脚本以 streaming 方式运行以提升速度（单遍扫描 MCAP、只解码时间轴选中的帧、视频帧直接进编码器，无需临时 PNG 往返）。注意 LeRobot 的 streaming 编码器在内部队列满 100ms 后会**丢帧而非阻塞**（默认队列仅 30 帧，会导致视频比 parquet 数据少帧）。本脚本做了两层防护：
+
+- **预防**：自动按 MCAP summary 统计把编码队列设为能容纳最长 episode，使丢帧路径不可达；
+- **检测**：转换结束后用 `ffprobe` 逐相机核对 mp4 帧数与 parquet 总帧数，输出 `verify: ... frames OK` 即为一致，否则以退出码 1 报错。
 
 ### 输出产物
 

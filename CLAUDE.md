@@ -1,5 +1,5 @@
 # Galbot-G1 机器人工具链
-银河通用 G1 机器人开发部署工具链（基于 Lerobot 框架 v5.0.1） 
+银河通用 G1 机器人开发部署工具链（基于 Lerobot 框架 v0.5.1） 
 
 ## 项目规范
 - 环境说明：使用`conda activate xhum-new && export PATH="/media/jushen/Leslie-liu/miniconda/envs/xhum-new/bin:$PATH"`的环境来进行开发，具体可参考该环境内指向的 lerobot 源代码来进行基于 lerobot 框架的开发，但是不许修改该环境中指向的 lerobot 源代码
