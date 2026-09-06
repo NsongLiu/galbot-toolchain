@@ -290,6 +290,56 @@ def select_camera_indices(times: list[int], master_times: list[int], key: str, t
     return indices
 
 
+# 单侧最多允许裁剪的边界帧数（30fps 下约 0.5s）；超过则视为真实数据问题。
+MAX_BOUNDARY_TRIM = 15
+
+
+def trim_unalignable_boundary_frames(
+    master_times: list[int],
+    camera_times: dict[str, list[int]],
+    tolerance_ns: int,
+) -> tuple[list[int], int, int]:
+    """Trim leading/trailing master frames that no camera can cover within tolerance.
+
+    采集端两路相机的启停时刻不齐（如头部相机流晚启动 ~34ms），导致 episode 首/尾
+    个别主帧找不到容差内的配对帧。这些边界帧机器人一般尚未开始/已结束动作，直接
+    裁剪；中间帧失配或单侧裁剪超过 MAX_BOUNDARY_TRIM 仍报错（真实丢帧不被掩盖）。
+
+    Returns:
+        (trimmed master_times, dropped_head, dropped_tail)
+    """
+    n = len(master_times)
+    alignable = [True] * n
+    for key, times in camera_times.items():
+        if not times:
+            raise ValueError(f"no frames for camera {key}")
+        for i, t_ns in enumerate(master_times):
+            idx = nearest_index(times, t_ns)
+            if abs(times[idx] - t_ns) > tolerance_ns:
+                alignable[i] = False
+
+    if all(alignable):
+        return master_times, 0, 0
+    if not any(alignable):
+        raise ValueError("no master frame is alignable across cameras")
+
+    first = alignable.index(True)                      # 首个可对齐帧（前缀长度）
+    last = n - alignable[::-1].index(True)             # 末个可对齐帧的后一位
+    if not all(alignable[first:last]):
+        bad = [i for i in range(first, last) if not alignable[i]]
+        raise ValueError(
+            f"interior master frames are not alignable ({len(bad)} frames, "
+            f"first at index {bad[0]}); refusing to trim interior data"
+        )
+    n_head, n_tail = first, n - last
+    if n_head > MAX_BOUNDARY_TRIM or n_tail > MAX_BOUNDARY_TRIM:
+        raise ValueError(
+            f"unalignable boundary too long: head={n_head} tail={n_tail} "
+            f"(max {MAX_BOUNDARY_TRIM} per side); check camera streams"
+        )
+    return master_times[first:last], n_head, n_tail
+
+
 def get_image_shapes(camera_payloads: dict[str, list[bytes]]) -> dict[str, tuple[int, int, int]]:
     """Infer image shapes by decoding the first frame of each camera."""
     shapes = {}
@@ -403,6 +453,16 @@ def process_episode(
     master_times = data["camera_times"][master_key]
     if not master_times:
         raise ValueError("No master camera frames in episode")
+
+    # 裁剪首/尾无相机配对（超容差）的边界帧；中间帧失配仍抛错。
+    master_times, n_head, n_tail = trim_unalignable_boundary_frames(
+        master_times, data["camera_times"], tolerance_ns
+    )
+    if n_head or n_tail:
+        print(
+            f"  trimmed {n_head} leading + {n_tail} trailing master frame(s) "
+            "with no camera match within tolerance"
+        )
 
     # Per camera, the frame indices selected by the master timeline (same
     # nearest-within-tolerance semantics as the non-streaming converter).

@@ -13,6 +13,7 @@
       "observation.images.front_head_right": "observation.images.base_0_rgb",
       "observation.images.right_arm": "observation.images.right_wrist_0_rgb"
     },
+    "state_indices": [0, 1, 2, 3, 4, 5, 6, 25],
     "normalization_mapping": {
       "ACTION": "MEAN_STD",
       "STATE": "MEAN_STD",

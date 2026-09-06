@@ -20,6 +20,8 @@ from galbot.train._compat import apply_lerobot_compat_patch
 
 apply_lerobot_compat_patch()
 
+import galbot.processors  # noqa: F401  注册 slice_state_processor，供 checkpoint 管线反序列化
+
 from lerobot.configs.types import FeatureType
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
@@ -35,8 +37,9 @@ PI05_TOKENIZER_PATH: str | None = "/media/jushen/Leslie-liu/leslie-liu/pretraine
 class PolicyAgent:
     """Thin wrapper around a pretrained LeRobot policy for real-robot inference."""
 
-    def __init__(self, model_path: str | Path):
+    def __init__(self, model_path: str | Path, task: str | None = None):
         self.model_path = Path(model_path)
+        self._task = task or PI05_TASK  # VLA 语言指令（pi05 用；ACT 忽略）
         self.policy_type: str = ""
         self._cam_aliases: dict[str, str] = {}  # policy 侧相机短名 -> 数据集相机短名
         self._missing_cam_notified: set[str] = set()
@@ -136,6 +139,38 @@ class PolicyAgent:
             action = self.postprocessor(action)
         return action
 
+    def inference_chunk(self, obs: dict, k: int) -> torch.Tensor:
+        """单次推理，返回预测 chunk 的前 K 步动作（K, action_dim），已反归一化。
+
+        与 ``inference`` 的单步队列语义不同：每个请求都基于当前观测重新规划一个
+        完整 chunk（pi05 ``predict_action_chunk`` 每次调用重新生成）。
+        """
+        if k <= 0:
+            raise ValueError(f"k must be positive, got {k}")
+        if getattr(self.policy.config, "temporal_ensemble_coeff", None) is not None and k > 1:
+            raise RuntimeError(
+                "K-step open-loop chunk execution is incompatible with temporal ensembling"
+            )
+
+        batch = self._prepare_batch(obs)
+        with torch.inference_mode():
+            if self.preprocessor is not None:
+                batch = self.preprocessor(batch)
+            raw_chunk = self.policy.predict_action_chunk(batch)  # (B, chunk, action_dim)
+            if raw_chunk.ndim != 3 or raw_chunk.shape[0] != 1:
+                raise RuntimeError(
+                    f"predict_action_chunk must return (1, chunk, action_dim), got {tuple(raw_chunk.shape)}"
+                )
+            if k > raw_chunk.shape[1]:
+                raise ValueError(f"requested K={k}, but model chunk only has {raw_chunk.shape[1]} actions")
+            flat = raw_chunk[:, :k, :].reshape(k, raw_chunk.shape[-1])
+            if self.postprocessor is not None:
+                # postprocessor 接受 (B, action_dim)；按行反归一化
+                flat = self.postprocessor(flat)
+        if not torch.isfinite(flat).all():
+            raise RuntimeError("model action chunk contains NaN or Inf")
+        return flat
+
     def reset(self) -> None:
         self.policy.reset()
         if self.preprocessor is not None:
@@ -178,6 +213,6 @@ class PolicyAgent:
 
         if self.policy_type == "pi05":
             # VLA 语言指令；preprocessor 的 AddBatchDimension 会包装成 [str]。
-            batch["task"] = PI05_TASK
+            batch["task"] = self._task
 
         return batch

@@ -29,11 +29,12 @@ def main() -> None:
     ap.add_argument("--dataset-root", required=True)
     ap.add_argument("--repo-id", required=True)
     ap.add_argument("--episode", type=int, default=0)
+    ap.add_argument("--task", default=None, help="VLA 语言指令（pi05 用；缺省用 policy_agent 内置值）")
     ap.add_argument("--max-steps", type=int, default=0, help="0 = full episode")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    agent = PolicyAgent(args.checkpoint)
+    agent = PolicyAgent(args.checkpoint, task=args.task)
     agent.reset()
 
     ds = LeRobotDataset(args.repo_id, root=args.dataset_root, episodes=[args.episode], video_backend="pyav")

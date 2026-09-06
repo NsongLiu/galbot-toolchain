@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from pprint import pformat
 
+import numpy as np
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
@@ -29,6 +30,8 @@ from galbot.train._compat import apply_lerobot_compat_patch
 
 apply_lerobot_compat_patch()
 
+from galbot.processors import SliceStateProcessorStep
+from galbot.train.multi_dataset import MultiLeRobotDataset
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
@@ -57,6 +60,32 @@ PRETRAINED_MODEL_DIR = "pretrained_model"
 def load_config(path: str | Path) -> dict:
     with open(path) as f:
         return json.load(f)
+
+
+def _validate_state_indices(state_indices: list, meta: LeRobotDatasetMetadata) -> list[int]:
+    """校验 policy.state_indices（相对数据集 state 维度），返回 int 列表。"""
+    state_dim = int(meta.features["observation.state"]["shape"][0])
+    idx = [int(i) for i in state_indices]
+    if not idx or len(set(idx)) != len(idx) or min(idx) < 0 or max(idx) >= state_dim:
+        raise ValueError(
+            f"policy.state_indices 非法: {state_indices}; 需在 [0, {state_dim}) 范围内且无重复"
+        )
+    return idx
+
+
+def _slice_state_stats(stats: dict, indices: list[int]) -> None:
+    """将 observation.state 的归一化统计量按相同索引切片（与切片 processor 保持一致）。"""
+    state_stats = stats.get("observation.state")
+    if not state_stats:
+        raise ValueError("dataset stats 中缺少 observation.state")
+
+    def _is_vector(val) -> bool:
+        return isinstance(val, (torch.Tensor, np.ndarray)) and val.ndim > 0
+
+    state_dim = next(int(v.shape[-1]) for v in state_stats.values() if _is_vector(v))
+    for name, val in state_stats.items():
+        if _is_vector(val) and val.shape[-1] == state_dim:
+            state_stats[name] = val[..., indices]
 
 
 def _apply_policy_overrides(pol_cfg: PreTrainedConfig, policy_cfg: dict) -> None:
@@ -100,7 +129,7 @@ def _save_checkpoint(
 
 
 def train(cfg: dict) -> None:
-    dataset_cfg = cfg["dataset"]
+    datasets_cfg = cfg.get("datasets") or [cfg["dataset"]]
     policy_cfg = cfg["policy"]
     train_cfg = cfg["training"]
     use_imagenet_stats = cfg.get("use_imagenet_stats", True)
@@ -134,7 +163,8 @@ def train(cfg: dict) -> None:
 
     # --- dataset ---
     if is_main:
-        logging.info("Loading dataset %s from %s", dataset_cfg["repo_id"], dataset_cfg["root"])
+        for d in datasets_cfg:
+            logging.info("Loading dataset %s from %s", d["repo_id"], d["root"])
 
     if policy_cfg.get("path"):
         pol_cfg = PreTrainedConfig.from_pretrained(policy_cfg["path"])
@@ -144,16 +174,21 @@ def train(cfg: dict) -> None:
     # Apply JSON policy overrides (e.g. pi05 chunk_size, dtype, gradient_checkpointing).
     _apply_policy_overrides(pol_cfg, policy_cfg)
 
-    ds_meta = LeRobotDatasetMetadata(dataset_cfg["repo_id"], root=dataset_cfg["root"])
-    delta_timestamps = resolve_delta_timestamps(pol_cfg, ds_meta)
+    first_meta = LeRobotDatasetMetadata(datasets_cfg[0]["repo_id"], root=datasets_cfg[0]["root"])
+    delta_timestamps = resolve_delta_timestamps(pol_cfg, first_meta)
 
-    ds = LeRobotDataset(
-        dataset_cfg["repo_id"],
-        root=dataset_cfg["root"],
-        episodes=dataset_cfg.get("episodes"),
-        delta_timestamps=delta_timestamps,
-        video_backend=video_backend,
-    )
+    datasets = [
+        LeRobotDataset(
+            d["repo_id"],
+            root=d["root"],
+            episodes=d.get("episodes"),
+            delta_timestamps=delta_timestamps,
+            video_backend=video_backend,
+        )
+        for d in datasets_cfg
+    ]
+    ds = datasets[0] if len(datasets) == 1 else MultiLeRobotDataset(datasets)
+    ds_meta = ds.meta
 
     accelerator.wait_for_everyone()
 
@@ -164,6 +199,20 @@ def train(cfg: dict) -> None:
 
     if is_main:
         logging.info("Dataset: %s", ds)
+
+    # --- state 切片（在 make_policy 之前收缩特征定义与统计量，
+    #     使从头构建的策略（ACT 等）按切片后维度建输入层） ---
+    state_indices = policy_cfg.get("state_indices")
+    idx: list[int] | None = None
+    if state_indices is not None:
+        idx = _validate_state_indices(state_indices, ds.meta)
+        _slice_state_stats(ds.meta.stats, idx)
+        feat = ds.meta.info["features"]["observation.state"]
+        feat["shape"] = [len(idx)]
+        if feat.get("names"):
+            feat["names"] = [feat["names"][i] for i in idx]
+        if is_main:
+            logging.info("observation.state 仅使用关节索引 %s（%d 维）", idx, len(idx))
 
     # --- policy ---
     if is_main:
@@ -223,6 +272,10 @@ def train(cfg: dict) -> None:
             ),
             DeviceProcessorStep(device=device.type),
         ]
+        if state_indices is not None:
+            # 放在 Rename 之后、归一化之前；随 policy_preprocessor.json 保存，
+            # 部署端加载管线后仍接收完整 state，由该 step 切片，checkpoint 自包含。
+            input_steps.insert(1, SliceStateProcessorStep(indices=idx))
         preprocessor = PolicyProcessorPipeline(
             steps=input_steps,
             name=POLICY_PREPROCESSOR_DEFAULT_NAME,
@@ -246,6 +299,10 @@ def train(cfg: dict) -> None:
             pretrained_path=pol_cfg.pretrained_path if hasattr(pol_cfg, "pretrained_path") else None,
             dataset_stats=processor_stats,
         )
+        if state_indices is not None:
+            # 切片放在管线最前（rename 仅作用于图像键，不影响 state 键）；
+            # 随 policy_preprocessor.json 保存，部署端 checkpoint 自包含。
+            preprocessor.steps = [SliceStateProcessorStep(indices=idx), *preprocessor.steps]
 
     # --- optimizer / scheduler ---
     optimizer_cfg = pol_cfg.get_optimizer_preset()

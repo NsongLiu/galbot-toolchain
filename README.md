@@ -82,6 +82,8 @@ python convert_mcap_to_lerobot.py --help
 - **预防**：自动按 MCAP summary 统计把编码队列设为能容纳最长 episode，使丢帧路径不可达；
 - **检测**：转换结束后用 `ffprobe` 逐相机核对 mp4 帧数与 parquet 总帧数，输出 `verify: ... frames OK` 即为一致，否则以退出码 1 报错。
 
+另外，采集端两路相机的启停时刻可能不齐（如头部相机流晚启动几十毫秒），导致 episode **首/尾个别帧**找不到容差内的配对帧。脚本会自动裁剪这些边界帧并打印 `trimmed N leading + M trailing` 日志；**中间帧失配或单侧裁剪超过 15 帧仍会报错**，真实丢帧不会被掩盖。
+
 ### 输出产物
 
 转换完成后会得到：
@@ -159,6 +161,7 @@ PYTHONPATH=. python -m galbot.train.train \
 | `policy.type` | 策略类型，如 `act`、`diffusion`、`vqbet` 等 |
 | `policy.path` | 预训练模型路径，`null` 表示从零开始 |
 | `policy.push_to_hub` | 是否推送到 Hugging Face Hub |
+| `policy.state_indices` | 可选：`observation.state` 只输入指定关节索引，如 `[0,1,2,3,4,5,6,25]` 表示右臂 7 关节 + 右夹爪（索引对应 `robot_config.json` 的 `state_joint_order`）。pi05 / ACT 等策略均已支持；切片 step 随 `policy_preprocessor.json` 保存，部署端仍发送完整 29 维 state，无需改动机器人端。可用 `debug/visualize_state_dims.py` 可视化各维度运动量以确认选择 |
 | `training.output_dir` | 模型输出目录 |
 | `training.steps` | 总训练步数 |
 | `training.batch_size` | 单卡 batch size |

@@ -321,3 +321,70 @@ class GalbotRobotInterface:
         )
         if status != self._control_status.SUCCESS:
             raise RuntimeError(f"move_arm_to failed: status={status}")
+
+    # ------------------------------------------------------------------
+    # 底盘（速度控制，供键盘遥控等场景使用）
+    # ------------------------------------------------------------------
+
+    def acquire_chassis_twist_controller(self) -> bool:
+        """尝试获取底盘速度控制器（chassis_twist_ctrl）。
+
+        SDK 文档要求速度控制前获取该控制器；真机未验证,故失败仅告警。
+        """
+        if self._robot is None:
+            raise RuntimeError("robot not connected; call connect() first")
+        for fn_name in ("acquire_controller", "switch_controller"):
+            fn = getattr(self._robot, fn_name, None)
+            if fn is None:
+                continue
+            try:
+                status = fn("chassis_twist_ctrl")
+            except Exception as exc:  # noqa: BLE001 - 旧版 SDK 可能无此接口
+                print(
+                    f"[GalbotRobotInterface] {fn_name} warning: {exc}",
+                    flush=True,
+                )
+                continue
+            if status == self._control_status.SUCCESS:
+                print(
+                    f"[GalbotRobotInterface] chassis_twist_ctrl acquired "
+                    f"via {fn_name}",
+                    flush=True,
+                )
+                return True
+            print(
+                f"[GalbotRobotInterface] {fn_name} status={status}",
+                flush=True,
+            )
+        return False
+
+    def set_base_velocity(
+        self,
+        vx: float,
+        vy: float,
+        wz: float,
+        duration_s: float = 0.2,
+    ) -> None:
+        """下发底盘速度（基坐标系：vx 前/后 m/s, vy 左/右 m/s, wz 偏航 rad/s）。
+
+        ``duration_s`` 为看门狗时长：超时未收到新命令底盘自动停止。
+        """
+        if self._robot is None:
+            raise RuntimeError("robot not connected; call connect() first")
+        status = self._robot.set_base_velocity(
+            [float(vx), float(vy), 0.0], [0.0, 0.0, float(wz)], float(duration_s)
+        )
+        if status != self._control_status.SUCCESS:
+            print(
+                f"[GalbotRobotInterface] set_base_velocity status={status}",
+                flush=True,
+            )
+
+    def stop_base(self) -> None:
+        """立即停止底盘运动（关机/退出前必调）。"""
+        if self._robot is None:
+            return
+        try:
+            self._robot.stop_base()
+        except Exception as exc:  # noqa: BLE001 - 停止阶段不抛出
+            print(f"[GalbotRobotInterface] stop_base warning: {exc}", flush=True)

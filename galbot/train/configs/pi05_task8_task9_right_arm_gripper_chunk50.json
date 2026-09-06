@@ -1,12 +1,19 @@
 {
-  "dataset": {
-    "repo_id": "task1_right_arm_gripper",
-    "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task1_right_arm_gripper",
-    "episodes": null
-  },
+  "datasets": [
+    {
+      "repo_id": "task8_right_arm_gripper",
+      "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task8_right_arm_gripper",
+      "episodes": null
+    },
+    {
+      "repo_id": "task9_right_arm_gripper",
+      "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task9_right_arm_gripper",
+      "episodes": null
+    }
+  ],
   "policy": {
     "type": "pi05",
-    "path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/pi05_base",
+    "path": "/media/jushen/Leslie-liu/galbot_dataset/outputs/pi05_task8_right_arm_gripper/checkpoints/030000/pretrained_model",
     "tokenizer_path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224",
     "push_to_hub": false,
     "rename_map": {
@@ -38,10 +45,10 @@
     "scheduler_decay_lr": 2.5e-6
   },
   "training": {
-    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/pi05_task1_right_arm_gripper",
+    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/pi05_task8_task9_right_arm_gripper_chunk50",
     "batch_size": 16,
-    "steps": 20000,
-    "num_workers": 4,
+    "steps": 30000,
+    "num_workers": 8,
     "save_freq": 5000,
     "log_freq": 100,
     "seed": 1000,
@@ -49,5 +56,12 @@
     "resume_dir": null
   },
   "use_imagenet_stats": true,
-  "video_backend": "pyav"
+  "video_backend": "pyav",
+  "wandb": {
+    "enable": true,
+    "project": "galbot-pi05",
+    "entity": "leslie126-peking-university",
+    "run_name": "pi05_task8_task9_right_arm_gripper_chunk50",
+    "mode": "online"
+  }
 }
