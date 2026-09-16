@@ -30,10 +30,10 @@ from galbot.train._compat import apply_lerobot_compat_patch
 
 apply_lerobot_compat_patch()
 
-from galbot.processors import SliceStateProcessorStep
+from galbot.processors import CropImageProcessorStep, SliceStateProcessorStep
 from galbot.train.multi_dataset import MultiLeRobotDataset
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.configs.types import NormalizationMode
+from lerobot.configs.types import FeatureType, NormalizationMode
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.factory import IMAGENET_STATS, resolve_delta_timestamps
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -96,12 +96,47 @@ def _apply_policy_overrides(pol_cfg: PreTrainedConfig, policy_cfg: dict) -> None
             for key, value in policy_cfg["normalization_mapping"].items()
         }
 
-    reserved = {"type", "path", "push_to_hub", "normalization_mapping", "tokenizer_path"}
+    reserved = {"type", "path", "push_to_hub", "normalization_mapping", "tokenizer_path", "image_crops"}
     for key, value in policy_cfg.items():
         if key in reserved:
             continue
         if hasattr(pol_cfg, key):
             setattr(pol_cfg, key, value)
+
+
+def _build_crop_step(
+    image_crops: dict | None,
+    rename_map: dict | None,
+    meta: LeRobotDatasetMetadata,
+    pol_cfg: PreTrainedConfig,
+) -> CropImageProcessorStep | None:
+    """校验 policy.image_crops 并构建图像裁剪 step（无配置时返回 None）。
+
+    键名为 rename 后的 policy 侧键名；裁剪框 [top, left, height, width] 定义在
+    数据集原始分辨率上，该分辨率记入 source_shapes 随 checkpoint 保存——部署端
+    输入分辨率不同时由 step 按比例缩放，保证训练/部署裁剪内容一致。
+    """
+    if not image_crops:
+        return None
+    inv_rename = {v: k for k, v in (rename_map or {}).items()}
+    source_shapes = {}
+    for key, box in image_crops.items():
+        feat = pol_cfg.input_features.get(key)
+        if feat is None or feat.type is not FeatureType.VISUAL:
+            raise ValueError(
+                f"policy.image_crops 的键 {key!r} 不是 policy 的视觉输入特征"
+                f"（可用: {sorted(pol_cfg.input_features)}）"
+            )
+        ds_key = inv_rename.get(key, key)
+        ds_feat = meta.info["features"].get(ds_key)
+        if ds_feat is None:
+            raise ValueError(f"policy.image_crops 的键 {key!r} 对应的数据集特征 {ds_key!r} 不存在")
+        h, w = (int(v) for v in ds_feat["shape"][:2])
+        top, left, height, width = (int(v) for v in box)
+        if top + height > h or left + width > w:
+            raise ValueError(f"policy.image_crops[{key!r}]={box} 超出数据集图像尺寸 {(h, w)}")
+        source_shapes[key] = [h, w]
+    return CropImageProcessorStep(crops=dict(image_crops), source_shapes=source_shapes)
 
 
 def _save_checkpoint(
@@ -168,6 +203,22 @@ def train(cfg: dict) -> None:
 
     if policy_cfg.get("path"):
         pol_cfg = PreTrainedConfig.from_pretrained(policy_cfg["path"])
+        requested_type = policy_cfg.get("type")
+        if requested_type and requested_type != getattr(pol_cfg, "type", None):
+            # JSON 中的 type 优先：从 pi05 系 checkpoint 初始化派生策略（如 eec_pi05）时，
+            # 按请求类型重建配置；权重仍以 strict=False 加载，新增模块随机初始化。
+            # 注意必须保留 checkpoint 的 input_features（policy 侧相机命名/分辨率），
+            # 否则 make_policy 会用数据集原生特征重填，与 rename 管线的输出键不匹配。
+            if is_main:
+                logging.info(
+                    "Policy type override: checkpoint config type=%s, requested type=%s; "
+                    "building config from the requested type.",
+                    pol_cfg.type,
+                    requested_type,
+                )
+            input_features = pol_cfg.input_features
+            pol_cfg = make_policy_config(requested_type)
+            pol_cfg.input_features = input_features
     else:
         pol_cfg = make_policy_config(policy_cfg["type"])
 
@@ -233,6 +284,9 @@ def train(cfg: dict) -> None:
     # --- pre/post processors ---
     processor_stats = ds.meta.stats
     rename_map = policy_cfg.get("rename_map")
+    crop_step = _build_crop_step(policy_cfg.get("image_crops"), rename_map, ds.meta, pol_cfg)
+    if crop_step is not None and is_main:
+        logging.info("图像固定区域裁剪: %s", crop_step.crops)
     if isinstance(pol_cfg, PI05Config):
         # PI05 processors must be built from code because the upstream pi05_base
         # preprocessor config references steps not present in this lerobot version.
@@ -276,6 +330,10 @@ def train(cfg: dict) -> None:
             # 放在 Rename 之后、归一化之前；随 policy_preprocessor.json 保存，
             # 部署端加载管线后仍接收完整 state，由该 step 切片，checkpoint 自包含。
             input_steps.insert(1, SliceStateProcessorStep(indices=idx))
+        if crop_step is not None:
+            # 紧随 Rename（裁剪键名为 rename 后的 policy 侧键名）；随 checkpoint
+            # 保存，部署端管线反序列化后对输入帧做同样裁剪，训练/部署一致。
+            input_steps.insert(1, crop_step)
         preprocessor = PolicyProcessorPipeline(
             steps=input_steps,
             name=POLICY_PREPROCESSOR_DEFAULT_NAME,
@@ -303,6 +361,13 @@ def train(cfg: dict) -> None:
             # 切片放在管线最前（rename 仅作用于图像键，不影响 state 键）；
             # 随 policy_preprocessor.json 保存，部署端 checkpoint 自包含。
             preprocessor.steps = [SliceStateProcessorStep(indices=idx), *preprocessor.steps]
+        if crop_step is not None:
+            # 裁剪须放在 Rename 之后（键名为 rename 后的 policy 侧键名）。
+            pos = next(
+                i for i, s in enumerate(preprocessor.steps)
+                if isinstance(s, RenameObservationsProcessorStep)
+            )
+            preprocessor.steps.insert(pos + 1, crop_step)
 
     # --- optimizer / scheduler ---
     optimizer_cfg = pol_cfg.get_optimizer_preset()

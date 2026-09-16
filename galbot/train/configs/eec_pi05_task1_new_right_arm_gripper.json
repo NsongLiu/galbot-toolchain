@@ -1,71 +1,56 @@
 {
-  "datasets": [
-    {
-      "repo_id": "task8_right_arm_gripper",
-      "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task8_right_arm_gripper",
-      "episodes": null
-    },
-    {
-      "repo_id": "task9_right_arm_gripper",
-      "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task9_right_arm_gripper",
-      "episodes": null
-    }
-  ],
+  "dataset": {
+    "repo_id": "task1_new_right_arm_gripper",
+    "root": "/media/jushen/Leslie-liu/galbot_dataset/lerobot_v3/task1_new_right_arm_gripper",
+    "episodes": null
+  },
   "policy": {
-    "type": "pi05",
-    "path": "/media/jushen/Leslie-liu/galbot_dataset/outputs/pi05_task8_right_arm_gripper_chunk16/checkpoints/030000/pretrained_model",
+    "type": "eec_pi05",
+    "path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/pi05_base",
     "tokenizer_path": "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224",
     "push_to_hub": false,
     "rename_map": {
       "observation.images.front_head_right": "observation.images.base_0_rgb",
       "observation.images.right_arm": "observation.images.right_wrist_0_rgb"
     },
-    "image_crops": {
-      "observation.images.base_0_rgb": [
-        380,
-        230,
-        360,
-        900
-      ]
-    },
-    "state_indices": [
-      0,
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      25
-    ],
+    "state_indices": [0, 1, 2, 3, 4, 5, 6, 25],
     "normalization_mapping": {
       "ACTION": "MEAN_STD",
       "STATE": "MEAN_STD",
       "VISUAL": "IDENTITY"
     },
+    "use_efficient_vla": true,
+    "use_compress_quantize": true,
+    "compress_dim": 128,
+    "quantization_bits": 8,
+    "use_local_resampler": false,
+    "perceiver_num_global_latents": 128,
+    "use_deformable_local_attention": false,
+    "use_global_to_local_refinement": false,
+    "use_state_conditioning": false,
+    "use_visual_feature_supervision": false,
+    "use_teacher_distillation": false,
+    "efficient_lr": 5e-5,
     "gradient_checkpointing": true,
     "dtype": "bfloat16",
-    "compile_model": true,
+    "compile_model": false,
     "freeze_vision_encoder": false,
     "train_expert_only": false,
-    "chunk_size": 16,
-    "n_action_steps": 16,
+    "chunk_size": 20,
+    "n_action_steps": 20,
     "max_state_dim": 32,
     "max_action_dim": 32,
-    "optimizer_lr": 2.5e-05,
-    "optimizer_betas": [
-      0.9,
-      0.95
-    ],
-    "optimizer_eps": 1e-08,
+    "optimizer_lr": 2.5e-5,
+    "optimizer_betas": [0.9, 0.95],
+    "optimizer_eps": 1e-8,
     "optimizer_weight_decay": 0.01,
     "optimizer_grad_clip_norm": 1.0,
     "scheduler_warmup_steps": 1000,
     "scheduler_decay_steps": 30000,
-    "scheduler_decay_lr": 2.5e-06
+    "scheduler_decay_lr": 2.5e-6
   },
   "training": {
-    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/pi05_task8_task9_right_arm_gripper_chunk16",
+    "output_dir": "/media/jushen/Leslie-liu/galbot_dataset/outputs/eec_pi05_task1_new_right_arm_gripper_global128",
     "batch_size": 16,
     "steps": 30000,
     "num_workers": 8,
@@ -81,7 +66,7 @@
     "enable": true,
     "project": "galbot-pi05",
     "entity": "leslie126-peking-university",
-    "run_name": "pi05_task8_task9_right_arm_gripper_chunk16",
+    "run_name": "eec_pi05_task1_new_right_arm_gripper_global128",
     "mode": "online"
   }
 }

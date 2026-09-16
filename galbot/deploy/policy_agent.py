@@ -34,6 +34,28 @@ PI05_TASK = "task1"
 PI05_TOKENIZER_PATH: str | None = "/media/jushen/Leslie-liu/leslie-liu/pretrained/paligemma-3b-pt-224"
 
 
+def _resize_with_pad(img: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
+    """保持长宽比缩放到 (target_w, target_h) 并黑边居中填充，尺寸已匹配则原样返回。
+
+    与训练时模型内部 resize_with_pad（bilinear、截断取整、余数像素补在下/右）
+    的几何保持一致。此前这里直接 cv2.resize 压扁：pi05 checkpoint 的
+    input_features 是 224x224，部署输入相对训练纵向拉伸（头相机 x1.33、腕部
+    x1.78），实测动作输出偏差达各关节动作 std 的 15-50%（见
+    debug/eval_squash_vs_letterbox.py）。ACT 的 input_features 即数据集分辨率，
+    输入尺寸一致时本函数恒等，无行为变化。
+    """
+    h, w = img.shape[:2]
+    if (w, h) == (target_w, target_h):
+        return img
+    ratio = max(w / target_w, h / target_h)
+    new_w, new_h = int(w / ratio), int(h / ratio)
+    resized = cv2.resize(img, dsize=(new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    out = np.zeros((target_h, target_w, img.shape[2]), dtype=img.dtype)
+    pad_h, pad_w = (target_h - new_h) // 2, (target_w - new_w) // 2
+    out[pad_h : pad_h + new_h, pad_w : pad_w + new_w] = resized
+    return out
+
+
 class PolicyAgent:
     """Thin wrapper around a pretrained LeRobot policy for real-robot inference."""
 
@@ -202,7 +224,7 @@ class PolicyAgent:
                 raise ValueError(
                     f"obs['images'] missing {cam_name!r} (model expects: {need}); got keys: [{avail}]"
                 )
-            img = cv2.resize(img, dsize=(target_w, target_h))
+            img = _resize_with_pad(img, target_w, target_h)
             img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             batch[model_key] = img_t.unsqueeze(0).to(self.device, non_blocking=True)
 
