@@ -319,3 +319,13 @@ action_rate: 30.0
 - 夹爪指令在 `robot_interface.py` 内做 raw 35..100 限幅，臂部速度受 `robot.max_speed` 限制。
 - ZMQ TCP 默认无认证，单机部署请使用 `127.0.0.1`。
 - 跨机器请使用防火墙或 SSH 隧道。
+
+
+## 多模态本地适配示例
+
+本分支在 [examples/misac-local-pipeline/](examples/misac-local-pipeline/README.md)
+保存本地 RGB/机器人状态数据转换、ACT 微调、离线评估和推理检查示例，
+来源为 [DongSu13/galbot-misac-local-pipeline](https://github.com/DongSu13/galbot-misac-local-pipeline)。
+进入该示例目录后按其中的中英文 README 运行；此目录目前作为独立适配示例保留。
+仅含代码、通用配置及介绍，不附录制数据、权重、真实划分或实验结果。
+原工具链、ACT 论文与 LeRobot 引用及验证范围见示例说明。

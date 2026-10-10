@@ -1,0 +1,19 @@
+{
+  "project": "galbot-misac-local-pipeline",
+  "python": ".venv/Scripts/python.exe",
+  "mcap_dir": "assets/recordings",
+  "dataset_root": "assets/lerobot_datasets/example",
+  "repo_id": "example_right_arm",
+  "robot_config": "assets/config/galbot_misac_right_arm_robot_config_full.json",
+  "split_json": "assets/config/example_split.json",
+  "train_config": "assets/config/example_finetune.json",
+  "base_model": "assets/models/base_act/checkpoints/last/pretrained_model",
+  "train_output_dir": "assets/models/act_finetune",
+  "eval_dir": "outputs/eval",
+  "report_dir": "outputs/reports",
+  "steps": 1000,
+  "batch_size": 4,
+  "eval_batches": 32,
+  "seed": 1000,
+  "second_seed": 2026
+}

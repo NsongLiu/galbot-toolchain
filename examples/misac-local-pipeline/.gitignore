@@ -1,0 +1,35 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+*.log
+.venv/
+outputs/
+visual_report_optimized/outputs/
+
+# Local data and training artifacts must remain outside tracked source.
+assets/MiSAC/
+assets/lerobot_datasets/
+assets/models/
+*.mcap
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# Generated experiment records, credentials and local recordings are never source.
+assets/recordings/
+assets/config/*split*.json
+assets/config/*finetune*.json
+reference_results/
+*.parquet
+*.npy
+*.npz
+*.pkl
+.env
+.env.*
+/private/
+/local/
+debug_policy_images/
+debug_joints/

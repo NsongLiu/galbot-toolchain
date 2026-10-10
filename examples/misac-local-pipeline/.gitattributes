@@ -1,0 +1,2 @@
+*.sh text eol=lf
+scripts/galbot-run text eol=lf

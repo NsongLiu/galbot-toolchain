@@ -1,0 +1,25 @@
+{
+  "dataset": {
+    "repo_id": "galbot_g1",
+    "root": "assets/lerobot_datasets/example",
+    "episodes": null
+  },
+  "policy": {
+    "type": "act",
+    "path": null,
+    "push_to_hub": false
+  },
+  "training": {
+    "output_dir": "outputs/train/act_example",
+    "batch_size": 8,
+    "steps": 20000,
+    "num_workers": 4,
+    "save_freq": 5000,
+    "log_freq": 100,
+    "seed": 1000,
+    "resume": false,
+    "resume_dir": null
+  },
+  "use_imagenet_stats": true,
+  "video_backend": "pyav"
+}
