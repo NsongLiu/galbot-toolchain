@@ -321,11 +321,11 @@ action_rate: 30.0
 - 跨机器请使用防火墙或 SSH 隧道。
 
 
-## Galbot 多模态复现示例
+## Galbot Multimodal Reproduction Example
 
 本分支在 [examples/misac-local-pipeline/](examples/misac-local-pipeline/README.md)
 保存本地 RGB/机器人状态数据转换、ACT 微调、离线评估和推理检查示例，
-来源为 [Galbot 多模态复现](https://github.com/DongSu13/galbot-misac-local-pipeline)。
+来源为 [Galbot Multimodal Reproduction](https://github.com/DongSu13/galbot-misac-local-pipeline)。
 进入该示例目录后按其中的中英文 README 运行；此目录目前作为独立适配示例保留。
 仅含代码、通用配置及介绍，不附录制数据、权重、真实划分或实验结果。
 原工具链、ACT 论文与 LeRobot 引用及验证范围见示例说明。

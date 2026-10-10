@@ -1,4 +1,4 @@
-# Galbot 多模态复现
+# Galbot Multimodal Reproduction
 
 [中文](README.md) | [English](README.en.md)
 
