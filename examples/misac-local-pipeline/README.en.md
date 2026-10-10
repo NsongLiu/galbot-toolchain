@@ -1,4 +1,4 @@
-# Galbot MiSAC Local Pipeline
+# Galbot Multimodal Reproduction
 
 [中文](README.md) | [English](README.en.md)
 

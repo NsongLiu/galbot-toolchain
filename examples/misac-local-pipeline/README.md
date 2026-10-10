@@ -1,4 +1,4 @@
-# Galbot MiSAC Local Pipeline
+# Galbot 多模态复现
 
 [中文](README.md) | [English](README.en.md)
 
