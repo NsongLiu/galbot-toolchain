@@ -1,4 +1,4 @@
-# Galbot-G1 机器人工具链
+# Galbot Multimodal Reproduction
 银河通用 G1 机器人开发部署工具链（基于 Lerobot 框架 v0.5.1） 
 
 ## 项目规范

@@ -1,6 +1,8 @@
-# Galbot-G1 机器人工具链
+# Galbot Multimodal Reproduction
 
-基于 [LeRobot](https://github.com/huggingface/lerobot) 的 Galbot-G1 数据转换与模型训练工具链。
+本分支基于 [原 Galbot-G1 工具链](https://github.com/NsongLiu/galbot-toolchain/tree/dev-les)，加入 RGB 图像与机器人状态的多模态复现示例，涵盖数据转换、ACT 训练、离线评估和推理检查，使用 [LeRobot](https://github.com/huggingface/lerobot) 框架。
+
+复现部分的运行说明、论文与代码引用及验证范围见 [Galbot Multimodal Reproduction](examples/misac-local-pipeline/README.md)（[English](examples/misac-local-pipeline/README.en.md)）。下文保留原工具链的使用说明。
 
 ## 路径约定
 
